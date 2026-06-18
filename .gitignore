@@ -1,0 +1,42 @@
+# === Secrets / environment ===
+.env
+.env.*
+*.env
+!.env.example
+
+# === Excluded folders (not part of this repo) ===
+/Revenue Cat/
+/Size Matters RevenueCat/
+
+# === OS ===
+.DS_Store
+*.DS_Store
+
+# === Dependencies ===
+node_modules/
+
+# === Expo / build artifacts ===
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+/ios
+/android
+
+# === Logs ===
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+expo.log
+
+# === TypeScript ===
+*.tsbuildinfo
+
+# === Native signing / keys ===
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision

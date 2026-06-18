@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "vibecode",
+    "slug": "vibecode",
+    "scheme": "vibecode",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-quick-actions",
+        {
+          "iosActions": [
+            {
+              "id": "com.sizematters.feedback",
+              "title": "Deleting Size Matters?",
+              "subtitle": "Tell us why! We add new features every month.",
+              "icon": "symbol:xmark.circle.fill"
+            }
+          ]
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
