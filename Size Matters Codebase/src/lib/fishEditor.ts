@@ -11,6 +11,9 @@ interface FishDetectionResult {
   hasFish: boolean;
   confidence: 'high' | 'medium' | 'low';
   suggestion?: string;
+  /** The detected fish species/type, e.g. "largemouth bass". Used to anchor the resize prompt
+   *  so the resize step cannot swap the fish for a different species. */
+  species?: string;
 }
 
 interface FluxPollResponse {
@@ -53,14 +56,16 @@ export async function detectFishInImage(imageUri: string): Promise<FishDetection
               type: 'input_text',
               text: `Analyze this image. Is there a fish clearly visible that someone is holding or displaying (like a fishing catch photo)?
 
+Also identify the fish species/type as specifically as you can (e.g. "largemouth bass", "rainbow trout", "bluegill"). If you cannot tell the exact species, give the closest general type (e.g. "bass", "trout", "panfish"). If there is no fish, use an empty string for species.
+
 Reply in this exact JSON format only, no other text:
-{"hasFish": true/false, "confidence": "high/medium/low", "description": "brief description of what you see"}
+{"hasFish": true/false, "confidence": "high/medium/low", "species": "fish species or empty string", "description": "brief description of what you see"}
 
 Examples:
-- Person holding a bass = {"hasFish": true, "confidence": "high", "description": "person holding a largemouth bass"}
-- Fish in a bucket = {"hasFish": true, "confidence": "high", "description": "fish in a bucket"}
-- Person with no fish = {"hasFish": false, "confidence": "high", "description": "person without any fish"}
-- Aquarium with fish = {"hasFish": false, "confidence": "medium", "description": "aquarium - not a catch photo"}`
+- Person holding a bass = {"hasFish": true, "confidence": "high", "species": "largemouth bass", "description": "person holding a largemouth bass"}
+- Fish in a bucket = {"hasFish": true, "confidence": "high", "species": "fish", "description": "fish in a bucket"}
+- Person with no fish = {"hasFish": false, "confidence": "high", "species": "", "description": "person without any fish"}
+- Aquarium with fish = {"hasFish": false, "confidence": "medium", "species": "", "description": "aquarium - not a catch photo"}`
             },
             {
               type: 'input_image',
@@ -92,6 +97,10 @@ Examples:
           confidence: ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'medium',
         };
 
+        if (typeof parsed.species === 'string' && parsed.species.trim().length > 0) {
+          result.species = parsed.species.trim();
+        }
+
         if (!result.hasFish && parsed.description) {
           result.suggestion = parsed.description;
         }
@@ -113,44 +122,66 @@ Examples:
 }
 
 /**
- * Generate the optimal prompt for Flux Kontext based on scale
- * Kontext works best with direct, specific editing instructions
- * Uses precise percentage-based language for accurate resizing
+ * Generate the editing prompt for Flux Kontext based on scale.
+ *
+ * Every prompt is built from three fixed parts, in this order:
+ *   1. SIZE        — a single, precise geometric instruction (change length AND width).
+ *   2. IDENTITY    — lock the fish's species/appearance so ONLY its size changes. This is
+ *                    what prevents the model from swapping the catch for a different species.
+ *   3. SCENE       — keep the person and surroundings untouched (plus a bounded grip note
+ *                    when shrinking, so the hands don't end up holding empty air).
+ *
+ * `species` is the detected fish type (e.g. "largemouth bass"). When available it is named
+ * throughout the prompt as an extra anchor; otherwise we fall back to the generic word "fish".
  */
-function generateFluxPrompt(scale: number): string {
+function generateFluxPrompt(scale: number, species?: string): string {
   const isShrinking = scale < 1;
-
-  // Calculate the percentage change for clear instructions
   const percentageChange = Math.abs(Math.round((1 - scale) * 100));
 
+  // What we call the fish in the prompt — the specific species if we know it.
+  const cleanSpecies = species?.trim();
+  const fishName = cleanSpecies && cleanSpecies.length > 0 ? cleanSpecies : 'fish';
+
+  // 1. SIZE — one precise instruction per scale band. Length + width keeps proportions intact.
+  let sizeInstruction: string;
   if (isShrinking) {
     if (scale <= 0.5) {
-      // 50% scale = reduce to half the original size
-      // Allow hands to adjust naturally to hold the smaller fish
-      return `Resize the fish to be exactly half its current size - reduce it by 50%. The fish should be noticeably smaller but still clearly visible and proportional. Adjust the person's hands and arms naturally to hold the smaller fish correctly - they should grip the smaller fish realistically, not hold empty air. Keep the person's face, body, clothing, background, water, and lighting unchanged.`;
+      sizeInstruction = `Make the ${fishName} 50% smaller: reduce it to exactly half its current length and half its current width.`;
     } else if (scale <= 0.75) {
-      // 75% scale = reduce by 25%
-      return `Make the fish about 25% smaller than it currently is. Reduce the fish size modestly - it should look slightly smaller but still a respectable catch. Adjust the hands slightly if needed to naturally hold the smaller fish. Keep the person's face, body, background, and all other elements exactly the same.`;
+      sizeInstruction = `Make the ${fishName} 25% smaller: reduce its current length and width by about one quarter.`;
     } else {
-      // Anything between 0.75 and 1.0
-      return `Make the fish slightly smaller - reduce it by about ${percentageChange}%. A subtle size reduction. Keep everything else exactly the same - the person, background, lighting, and composition.`;
+      sizeInstruction = `Make the ${fishName} ${percentageChange}% smaller: a subtle, even reduction in its length and width.`;
     }
   } else {
     if (scale >= 3.0) {
-      // 3x = 300% of original size (a truly massive fish)
-      return `DRAMATICALLY enlarge the fish to be 3 times its current size - it should become a MASSIVE trophy fish that looks almost comically huge. Triple the fish's length and width. This is a 300% scale increase - the fish needs to be enormously bigger, like a record-breaking catch. Make it impressively, unmistakably larger. Keep the person, their pose, hands, arms, background, and lighting exactly the same. Only enlarge the fish to triple its original dimensions.`;
+      sizeInstruction = `Make the ${fishName} 3 times larger: triple its current length and width (a 300% size increase).`;
     } else if (scale >= 2.0) {
-      // 2x = 100% increase (double)
-      return `Double the size of the fish - make it 2 times larger than it currently is. It should look like an impressive trophy catch, twice as big. Keep the person, their pose, hands, background exactly the same.`;
+      sizeInstruction = `Make the ${fishName} 2 times larger: double its current length and width.`;
     } else if (scale >= 1.5) {
-      // 1.5x = 50% increase
-      return `Increase the fish size by 50% - make it 1.5 times larger. A noticeably bigger catch. Keep the person, their pose, hands, background, and all other elements exactly the same.`;
+      sizeInstruction = `Make the ${fishName} 1.5 times larger: increase its current length and width by 50%.`;
     } else {
-      // Between 1.0 and 1.5
       const increasePercent = Math.round((scale - 1) * 100);
-      return `Make the fish ${increasePercent}% larger than it currently is. A modest size increase. Keep everything else exactly the same - the person, background, lighting, and composition.`;
+      sizeInstruction = `Make the ${fishName} ${increasePercent}% larger: a modest, even increase in its length and width.`;
     }
   }
+
+  // 2. IDENTITY — the most important clause. Resizing must not regenerate the fish.
+  const identityLock =
+    `CRITICAL: it must remain the exact same ${fishName} — do NOT change the species, type, or kind of fish. ` +
+    `Keep its exact colors, markings, spots, stripes, scales, fin shapes, tail, head, and mouth identical, ` +
+    `and keep the same body proportions. The fish's appearance and identity stay completely unchanged; ` +
+    `the ONLY thing that changes is its overall size.`;
+
+  // 3. SCENE — everything that is not the fish stays exactly as photographed.
+  const sceneLock =
+    `Keep the person, their face, expression, pose, arms, hands, clothing, the background, water, and lighting exactly the same.`;
+
+  // When shrinking, allow ONLY the grip to adapt so hands aren't left clutching empty air.
+  const gripNote = isShrinking
+    ? ` You may subtly adjust only the fingers and grip so the hands still hold the smaller ${fishName} naturally; do not change anything else about the person.`
+    : '';
+
+  return `${sizeInstruction} ${identityLock} ${sceneLock}${gripNote}`;
 }
 
 /**
@@ -216,7 +247,8 @@ async function downloadImage(url: string): Promise<string> {
  */
 export async function resizeFishWithFlux(
   imageUri: string,
-  scale: number
+  scale: number,
+  species?: string
 ): Promise<FishEditResult> {
   try {
     console.log('[FishEditor] Starting Flux fish resize');
@@ -232,8 +264,9 @@ export async function resizeFishWithFlux(
       encoding: FileSystem.EncodingType.Base64,
     });
 
-    // Generate prompt based on scale
-    const prompt = generateFluxPrompt(scale);
+    // Generate prompt based on scale (and species, when detected)
+    const prompt = generateFluxPrompt(scale, species);
+    console.log('[FishEditor] Resizing species:', species || '(unknown)');
     console.log('[FishEditor] Flux prompt:', prompt);
 
     // Make initial request to Flux Kontext API
@@ -298,6 +331,6 @@ export async function resizeFishWithFlux(
 /**
  * Main entry point for fish resizing - now uses Flux
  */
-export async function resizeFish(imageUri: string, scale: number): Promise<FishEditResult> {
-  return resizeFishWithFlux(imageUri, scale);
+export async function resizeFish(imageUri: string, scale: number, species?: string): Promise<FishEditResult> {
+  return resizeFishWithFlux(imageUri, scale, species);
 }

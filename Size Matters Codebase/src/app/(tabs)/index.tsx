@@ -86,6 +86,7 @@ export default function HomeScreen() {
   const [pendingAction, setPendingAction] = useState<'save' | 'share' | null>(null);
   const [showWatermarkConfirm, setShowWatermarkConfirm] = useState(false);
   const [noFishDetected, setNoFishDetected] = useState(false);
+  const [detectedSpecies, setDetectedSpecies] = useState<string | undefined>(undefined);
   const [isValidatingImage, setIsValidatingImage] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
@@ -264,6 +265,7 @@ export default function HomeScreen() {
       setFishScale(1.0);
       setTagline(getRandomTagline('home'));
       setNoFishDetected(false);
+      setDetectedSpecies(undefined);
 
       // Validate image contains a fish
       console.log('[HomeScreen] Starting fish validation...');
@@ -271,6 +273,8 @@ export default function HomeScreen() {
       try {
         const detection = await detectFishInImage(imageUri);
         console.log('[HomeScreen] Fish validation complete:', detection);
+        // Remember the detected species so the resize step can keep the same fish.
+        setDetectedSpecies(detection.species);
         if (!detection.hasFish && detection.confidence !== 'low') {
           setNoFishDetected(true);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -286,12 +290,13 @@ export default function HomeScreen() {
   };
 
   const resizeFishMutation = useMutation({
-    mutationFn: async ({ imageUri, scale }: { imageUri: string; scale: number }) => {
+    mutationFn: async ({ imageUri, scale, species }: { imageUri: string; scale: number; species?: string }) => {
       console.log('Starting fish resize with Flux...');
       console.log('Image URI:', imageUri);
       console.log('Scale:', scale);
+      console.log('Species:', species || '(unknown)');
 
-      const result = await resizeFish(imageUri, scale);
+      const result = await resizeFish(imageUri, scale, species);
 
       if (!result.success) {
         throw new Error(result.error || 'Failed to resize fish');
@@ -415,7 +420,7 @@ export default function HomeScreen() {
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     setGameKey((k) => k + 1); // Increment key to force game remount
-    resizeFishMutation.mutate({ imageUri: selectedImage, scale: fishScale });
+    resizeFishMutation.mutate({ imageUri: selectedImage, scale: fishScale, species: detectedSpecies });
   };
 
   const handleSliderChange = useCallback((value: number) => {
@@ -697,6 +702,7 @@ export default function HomeScreen() {
     setFishScale(1.0);
     setTagline(getRandomTagline('home'));
     setNoFishDetected(false);
+    setDetectedSpecies(undefined);
   };
 
   const getScaleLabel = () => {
