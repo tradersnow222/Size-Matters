@@ -56,7 +56,6 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
   const [selectedPlan, setSelectedPlan] = useState<'single' | 'weekly' | 'annual'>('weekly');
 
   const setPremium = useAppStore((s) => s.setPremium);
-  const addSingleUnlockCredit = useAppStore((s) => s.addSingleUnlockCredit);
   const unlockPhoto = useAppStore((s) => s.unlockPhoto);
 
   // Reset success state when modal closes
@@ -95,7 +94,9 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
 
       // Check if this was a single unlock purchase
       if (packageId === '$rc_custom_single_unlock') {
-        addSingleUnlockCredit();
+        // Unlock the specific photo, when one was passed in (Gallery flow).
+        // The Home flow has no saved photo yet and instead unlocks the
+        // in-progress image via the onSuccess callback.
         if (photoId) {
           unlockPhoto(photoId);
         }

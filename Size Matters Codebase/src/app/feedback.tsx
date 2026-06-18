@@ -16,6 +16,7 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown, SlideInDown } from 'react-native-reanimated';
 import { Send, X, Frown, Meh, ThumbsDown, HelpCircle, Sparkles } from 'lucide-react-native';
 import { useAppStore } from '@/lib/store';
+import { sendFeedbackEmail } from '@/lib/appConfig';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -56,16 +57,10 @@ export default function FeedbackScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsSubmitting(true);
 
-    // Log feedback - in production, send to your backend
-    console.log('Deletion feedback submitted:', {
-      reason: selectedReason,
-      additionalFeedback: additionalFeedback.trim() || null,
-      timestamp: new Date().toISOString(),
-      source: 'quick_action',
-    });
-
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Deliver the deletion feedback to the support inbox so it isn't lost.
+    const reasonLabel = feedbackReasons.find((r) => r.id === selectedReason)?.label ?? selectedReason;
+    const body = `Reason: ${reasonLabel}\n\nDetails: ${additionalFeedback.trim() || '(none)'}`;
+    await sendFeedbackEmail('Size Matters - Deletion Feedback', body);
 
     setHasProvidedFeedback(true);
     setLastFeedbackPromptTime(Date.now());

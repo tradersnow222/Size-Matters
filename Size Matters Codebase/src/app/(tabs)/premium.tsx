@@ -90,9 +90,7 @@ export default function PremiumScreen() {
   useEffect(() => {
     const checkSubscription = async () => {
       const result = await hasActiveSubscription();
-      console.log('Premium screen: hasActiveSubscription result:', JSON.stringify(result));
       if (result.ok) {
-        console.log('Premium screen: Setting isPremium to:', result.data);
         // Sync local state with actual subscription status
         setPremium(result.data);
       }
@@ -386,7 +384,7 @@ export default function PremiumScreen() {
 
                       <View className="flex-row items-baseline justify-center mt-2">
                         <Text style={{ fontSize: 32, fontWeight: '700', color: selectedPlan === 'weekly' ? colors.text.primary : colors.text.secondary }}>
-                          ${weeklyPackage.product.price.toFixed(2)}
+                          {weeklyPackage.product.priceString}
                         </Text>
                         <Text style={{ fontSize: 18, color: colors.text.secondary, marginLeft: 4 }}>/week</Text>
                       </View>

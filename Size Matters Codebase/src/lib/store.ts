@@ -33,11 +33,8 @@ interface AppState {
   // Premium
   isPremium: boolean;
   freeEditsRemaining: number;
-  singleUnlockCredits: number; // Credits from $0.99 single unlock purchases
   decrementFreeEdits: () => void;
   setPremium: (value: boolean) => void;
-  addSingleUnlockCredit: () => void;
-  useSingleUnlockCredit: () => boolean;
 
   // Onboarding
   hasSeenOnboarding: boolean;
@@ -69,7 +66,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   profilePhotoUri: null,
   isPremium: false,
   freeEditsRemaining: 3,
-  singleUnlockCredits: 0,
   hasSeenOnboarding: false,
   hasUsedSizeButtons: false,
   hasRatedApp: false,
@@ -121,12 +117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   addPhoto: (photo) => {
-    console.log('Adding photo with ID:', photo.id);
-    set((state) => {
-      const newPhotos = [photo, ...state.photos];
-      console.log('Total photos after add:', newPhotos.length);
-      return { photos: newPhotos };
-    });
+    set((state) => ({ photos: [photo, ...state.photos] }));
     get().saveToStorage();
   },
 
@@ -169,21 +160,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().saveToStorage();
   },
 
-  addSingleUnlockCredit: () => {
-    set((state) => ({ singleUnlockCredits: state.singleUnlockCredits + 1 }));
-    get().saveToStorage();
-  },
-
-  useSingleUnlockCredit: () => {
-    const state = get();
-    if (state.singleUnlockCredits > 0) {
-      set({ singleUnlockCredits: state.singleUnlockCredits - 1 });
-      get().saveToStorage();
-      return true;
-    }
-    return false;
-  },
-
   loadFromStorage: async () => {
     try {
       const data = await AsyncStorage.getItem('size-matters-data');
@@ -196,7 +172,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           profilePhotoUri: parsed.profilePhotoUri || null,
           isPremium: parsed.isPremium || false,
           freeEditsRemaining: parsed.freeEditsRemaining ?? 3,
-          singleUnlockCredits: parsed.singleUnlockCredits ?? 0,
           hasSeenOnboarding: parsed.hasSeenOnboarding || false,
           hasUsedSizeButtons: parsed.hasUsedSizeButtons || false,
           hasRatedApp: parsed.hasRatedApp || false,
@@ -221,7 +196,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           profilePhotoUri: state.profilePhotoUri,
           isPremium: state.isPremium,
           freeEditsRemaining: state.freeEditsRemaining,
-          singleUnlockCredits: state.singleUnlockCredits,
           hasSeenOnboarding: state.hasSeenOnboarding,
           hasUsedSizeButtons: state.hasUsedSizeButtons,
           hasRatedApp: state.hasRatedApp,
@@ -244,7 +218,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         profilePhotoUri: null,
         isPremium: false,
         freeEditsRemaining: 3,
-        singleUnlockCredits: 0,
         hasSeenOnboarding: false,
         hasUsedSizeButtons: false,
         hasRatedApp: false,

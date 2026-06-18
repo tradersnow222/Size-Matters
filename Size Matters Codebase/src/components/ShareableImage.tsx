@@ -51,11 +51,7 @@ export const ShareableImage = forwardRef<ShareableImageRef, ShareableImageProps>
   ({ imageUri, isPremium = false }, ref) => {
     const viewRef = useRef<View>(null);
 
-    console.log('[ShareableImage] Rendering with isPremium:', isPremium);
-
     const capture = useCallback(async () => {
-      console.log('[ShareableImage] Capturing with isPremium:', isPremium);
-
       if (!viewRef.current) {
         throw new Error('View ref not available');
       }
@@ -70,7 +66,6 @@ export const ShareableImage = forwardRef<ShareableImageRef, ShareableImageProps>
         result: 'tmpfile',
       });
 
-      console.log('[ShareableImage] Captured to:', uri);
       return uri;
     }, [isPremium]);
 

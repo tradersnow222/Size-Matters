@@ -82,7 +82,9 @@ export default function HomeScreen() {
   const [isSharing, setIsSharing] = useState(false);
   const [gameKey, setGameKey] = useState(0); // Key to force game remount
   const [showPaywall, setShowPaywall] = useState(false);
-  const [currentPhotoId, setCurrentPhotoId] = useState<string | null>(null);
+  // Whether the current edited image has been unlocked via the single ($0.99)
+  // purchase, so it can be shared/saved watermark-free without a subscription.
+  const [currentImageUnlocked, setCurrentImageUnlocked] = useState(false);
   const [pendingAction, setPendingAction] = useState<'save' | 'share' | null>(null);
   const [showWatermarkConfirm, setShowWatermarkConfirm] = useState(false);
   const [noFishDetected, setNoFishDetected] = useState(false);
@@ -102,7 +104,6 @@ export default function HomeScreen() {
   const incrementEdits = useAppStore((s) => s.incrementEdits);
   const decrementFreeEdits = useAppStore((s) => s.decrementFreeEdits);
   const incrementShares = useAppStore((s) => s.incrementShares);
-  const unlockPhoto = useAppStore((s) => s.unlockPhoto);
   const totalEdits = useAppStore((s) => s.totalEdits);
   const shouldShowReviewPrompt = useAppStore((s) => s.shouldShowReviewPrompt);
   const setLastFeedbackPromptTime = useAppStore((s) => s.setLastFeedbackPromptTime);
@@ -249,7 +250,6 @@ export default function HomeScreen() {
 
   const pickImage = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    console.log('[HomeScreen] Opening image picker...');
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
@@ -259,20 +259,18 @@ export default function HomeScreen() {
 
     if (!result.canceled) {
       const imageUri = result.assets[0].uri;
-      console.log('[HomeScreen] Image selected, setting state...');
       setSelectedImage(imageUri);
       setEditedImage(null);
       setFishScale(1.0);
       setTagline(getRandomTagline('home'));
       setNoFishDetected(false);
       setDetectedSpecies(undefined);
+      setCurrentImageUnlocked(false);
 
       // Validate image contains a fish
-      console.log('[HomeScreen] Starting fish validation...');
       setIsValidatingImage(true);
       try {
         const detection = await detectFishInImage(imageUri);
-        console.log('[HomeScreen] Fish validation complete:', detection);
         // Remember the detected species so the resize step can keep the same fish.
         setDetectedSpecies(detection.species);
         if (!detection.hasFish && detection.confidence !== 'low') {
@@ -282,20 +280,13 @@ export default function HomeScreen() {
       } catch (error) {
         console.log('Fish detection error (non-blocking):', error);
       } finally {
-        console.log('[HomeScreen] Setting isValidatingImage to false...');
         setIsValidatingImage(false);
-        console.log('[HomeScreen] State update complete, screen should be interactive now');
       }
     }
   };
 
   const resizeFishMutation = useMutation({
     mutationFn: async ({ imageUri, scale, species }: { imageUri: string; scale: number; species?: string }) => {
-      console.log('Starting fish resize with Flux...');
-      console.log('Image URI:', imageUri);
-      console.log('Scale:', scale);
-      console.log('Species:', species || '(unknown)');
-
       const result = await resizeFish(imageUri, scale, species);
 
       if (!result.success) {
@@ -328,15 +319,6 @@ export default function HomeScreen() {
     cancelAnimation(button3xGlow);
 
     const shouldAnimate = selectedImage && !editedImage && fishScale === 1.0 && !noFishDetected && !isValidatingImage && !resizeFishMutation.isPending && !hasUsedSizeButtons;
-    console.log('[HomeScreen] Animation effect running, shouldAnimate:', shouldAnimate, {
-      selectedImage: !!selectedImage,
-      editedImage: !!editedImage,
-      fishScale,
-      noFishDetected,
-      isValidatingImage,
-      isPending: resizeFishMutation.isPending,
-      hasUsedSizeButtons
-    });
 
     if (shouldAnimate) {
       // Start the nudge animation after a short delay
@@ -502,8 +484,8 @@ export default function HomeScreen() {
   const handleShare = async () => {
     if (!editedImage || !shareableImageRef.current) return;
 
-    // If not premium, show watermark confirmation popup
-    if (!isPremium) {
+    // If not premium and this image hasn't been unlocked, show watermark confirmation popup
+    if (!isPremium && !currentImageUnlocked) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setShowWatermarkConfirm(true);
       return;
@@ -513,7 +495,7 @@ export default function HomeScreen() {
     setIsSharing(true);
 
     try {
-      // Capture the image (watermark-free for premium users)
+      // Capture the image (watermark-free for premium or unlocked images)
       const imageUri = await shareableImageRef.current.capture();
 
       // Save to gallery
@@ -599,8 +581,6 @@ export default function HomeScreen() {
   const handleSaveToPhone = async () => {
     if (!editedImage || !shareableImageRef.current) return;
 
-    console.log('[Save] Starting save, isPremium:', isPremium);
-
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsSaving(true);
     setSaveSuccess(false);
@@ -630,7 +610,7 @@ export default function HomeScreen() {
         createdAt: Date.now(),
         shareCount: 0,
         title: getRandomTitle(),
-        isUnlocked: isPremium,
+        isUnlocked: isPremium || currentImageUnlocked,
       };
       addPhoto(newPhoto);
 
@@ -656,10 +636,18 @@ export default function HomeScreen() {
 
   // Handle successful paywall completion
   const handlePaywallSuccess = async () => {
+    // A successful purchase from the watermark-removal flow unlocks this image,
+    // so the capture below (and any future share/save) is watermark-free even
+    // for a single ($0.99) unlock that doesn't grant full premium.
+    setCurrentImageUnlocked(true);
+
     if (pendingAction === 'share') {
       // Now share without watermark
       setIsSharing(true);
       try {
+        // Let the hidden ShareableImage re-render with the unlocked state
+        // before we capture it, otherwise the watermark would still be baked in.
+        await new Promise((resolve) => setTimeout(resolve, 150));
         if (shareableImageRef.current) {
           const imageUri = await shareableImageRef.current.capture();
           const newPhoto: FishPhoto = {
@@ -703,6 +691,7 @@ export default function HomeScreen() {
     setTagline(getRandomTagline('home'));
     setNoFishDetected(false);
     setDetectedSpecies(undefined);
+    setCurrentImageUnlocked(false);
   };
 
   const getScaleLabel = () => {
@@ -778,7 +767,7 @@ export default function HomeScreen() {
                     />
 
                     {/* Watermark overlay for non-premium users - scattered diagonal pattern */}
-                    {!isPremium && (
+                    {!(isPremium || currentImageUnlocked) && (
                       <View style={{ position: 'absolute', width: IMAGE_SIZE, height: IMAGE_SIZE, overflow: 'hidden' }} pointerEvents="none">
                         {/* Scattered diagonal watermarks - matching ShareableImage pattern */}
                         {[0, 1, 2, 3].map((row) =>
@@ -1004,7 +993,7 @@ export default function HomeScreen() {
                     disabled={isSharing}
                     isLoading={isSharing}
                     loadingLabel="Preparing..."
-                    label={isPremium ? "Share Photo" : "Share / Remove Watermark"}
+                    label={isPremium || currentImageUnlocked ? "Share Photo" : "Share / Remove Watermark"}
                     icon={<Share2 size={20} color="white" />}
                     variant="share"
                     enablePulse={!isSharing}
@@ -1343,7 +1332,7 @@ export default function HomeScreen() {
             ref={shareableImageRef}
             imageUri={editedImage}
             scale={fishScale}
-            isPremium={isPremium}
+            isPremium={isPremium || currentImageUnlocked}
           />
         </View>
       )}
@@ -1356,7 +1345,6 @@ export default function HomeScreen() {
           setPendingAction(null);
         }}
         onSuccess={handlePaywallSuccess}
-        photoId={currentPhotoId ?? undefined}
       />
 
       {/* Watermark Confirmation Modal */}

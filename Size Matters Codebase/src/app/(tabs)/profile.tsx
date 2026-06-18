@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, Pressable, Image, Modal, Platform, Linking as RNLinking } from 'react-native';
+import { View, Text, ScrollView, Pressable, Image, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import * as ImagePicker from 'expo-image-picker';
+import Constants from 'expo-constants';
 import Animated, {
   FadeInDown,
   FadeInUp,
@@ -13,10 +14,8 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
-  withSpring,
   Easing,
 } from 'react-native-reanimated';
-import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import {
   User,
   Fish,
@@ -29,11 +28,6 @@ import {
   Shield,
   ExternalLink,
   Camera,
-  X,
-  Check,
-  ZoomIn,
-  Move,
-  Star,
   MessageSquare,
   Heart,
   RotateCcw,
@@ -41,7 +35,7 @@ import {
 } from 'lucide-react-native';
 import { useAppStore } from '@/lib/store';
 import { colors, spacing, touchTargets, gradients } from '@/lib/design';
-import { FeedbackModal } from '@/components/FeedbackModal';
+import { sendFeedbackEmail } from '@/lib/appConfig';
 
 const ACHIEVEMENTS = [
   {
@@ -95,20 +89,9 @@ export default function ProfileScreen() {
   const setProfilePhoto = useAppStore((s) => s.setProfilePhoto);
   const freeEditsRemaining = useAppStore((s) => s.freeEditsRemaining);
 
-  const [showPhotoEditor, setShowPhotoEditor] = useState(false);
-  const [tempPhotoUri, setTempPhotoUri] = useState<string | null>(null);
-  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const resetAllData = useAppStore((s) => s.resetAllData);
-
-  // Photo editor gesture values
-  const scale = useSharedValue(1);
-  const savedScale = useSharedValue(1);
-  const translateX = useSharedValue(0);
-  const translateY = useSharedValue(0);
-  const savedTranslateX = useSharedValue(0);
-  const savedTranslateY = useSharedValue(0);
 
   useEffect(() => {
     useAppStore.getState().loadFromStorage();
@@ -132,37 +115,9 @@ export default function ProfileScreen() {
     transform: [{ translateX: fishSwim.value }],
   }));
 
-  // Photo editor animated style
-  const photoEditorStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: translateX.value },
-      { translateY: translateY.value },
-      { scale: scale.value },
-    ],
-  }));
-
-  // Pinch gesture for scaling
-  const pinchGesture = Gesture.Pinch()
-    .onUpdate((e) => {
-      scale.value = Math.max(1, Math.min(3, savedScale.value * e.scale));
-    })
-    .onEnd(() => {
-      savedScale.value = scale.value;
-    });
-
-  // Pan gesture for positioning
-  const panGesture = Gesture.Pan()
-    .onUpdate((e) => {
-      translateX.value = savedTranslateX.value + e.translationX;
-      translateY.value = savedTranslateY.value + e.translationY;
-    })
-    .onEnd(() => {
-      savedTranslateX.value = translateX.value;
-      savedTranslateY.value = translateY.value;
-    });
-
-  const composedGesture = Gesture.Simultaneous(pinchGesture, panGesture);
-
+  // Pick a new profile photo. The system image picker provides a square
+  // crop/zoom editor (allowsEditing + 1:1 aspect) and we persist exactly what
+  // the user crops, so no separate (non-persisting) editor is needed.
   const pickProfilePhoto = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -173,31 +128,9 @@ export default function ProfileScreen() {
     });
 
     if (!result.canceled && result.assets[0]) {
-      setTempPhotoUri(result.assets[0].uri);
-      // Reset transform values
-      scale.value = 1;
-      savedScale.value = 1;
-      translateX.value = 0;
-      translateY.value = 0;
-      savedTranslateX.value = 0;
-      savedTranslateY.value = 0;
-      setShowPhotoEditor(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setProfilePhoto(result.assets[0].uri);
     }
-  };
-
-  const confirmProfilePhoto = () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    if (tempPhotoUri) {
-      setProfilePhoto(tempPhotoUri);
-    }
-    setShowPhotoEditor(false);
-    setTempPhotoUri(null);
-  };
-
-  const cancelPhotoEditor = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setShowPhotoEditor(false);
-    setTempPhotoUri(null);
   };
 
   const handleResetApp = async () => {
@@ -604,8 +537,7 @@ export default function ProfileScreen() {
               <Pressable
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  // Open email for feedback
-                  RNLinking.openURL('mailto:info@sizematters.app?subject=Size%20Matters%20Feedback');
+                  sendFeedbackEmail('Size Matters Feedback', '');
                 }}
                 className="flex-row items-center p-4 active:opacity-70"
               >
@@ -690,7 +622,7 @@ export default function ProfileScreen() {
                 marginTop: spacing.md,
               }}
             >
-              Size Matters v1.0.0
+              Size Matters v{Constants.expoConfig?.version ?? '1.0.0'}
             </Text>
           </Animated.View>
 
@@ -824,87 +756,6 @@ export default function ProfileScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-
-      {/* Photo Editor Modal */}
-      <Modal
-        visible={showPhotoEditor}
-        transparent
-        animationType="fade"
-        onRequestClose={cancelPhotoEditor}
-      >
-        <GestureHandlerRootView style={{ flex: 1 }}>
-          <SafeAreaView style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.95)' }} edges={['top', 'bottom']}>
-            {/* Header */}
-            <View className="flex-row items-center justify-between px-4 py-3">
-              <Pressable
-                onPress={cancelPhotoEditor}
-                className="w-11 h-11 items-center justify-center rounded-full"
-                style={{ backgroundColor: 'rgba(255, 255, 255, 0.1)', zIndex: 10 }}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <X size={24} color="white" />
-              </Pressable>
-              <Text style={{ fontSize: 17, fontWeight: '600', color: 'white' }}>
-                Adjust Photo
-              </Text>
-              <Pressable
-                onPress={confirmProfilePhoto}
-                className="w-11 h-11 items-center justify-center rounded-full"
-                style={{ backgroundColor: colors.brand.primary, zIndex: 10 }}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Check size={24} color="white" />
-              </Pressable>
-            </View>
-
-              {/* Photo preview with circular mask */}
-              <View className="flex-1 items-center justify-center">
-                <View
-                  className="w-72 h-72 rounded-full overflow-hidden items-center justify-center"
-                  style={{
-                    borderWidth: 3,
-                    borderColor: colors.brand.primary,
-                  }}
-                >
-                  {tempPhotoUri && (
-                    <GestureDetector gesture={composedGesture}>
-                      <Animated.Image
-                        source={{ uri: tempPhotoUri }}
-                        style={[
-                          { width: 288, height: 288 },
-                          photoEditorStyle,
-                        ]}
-                        resizeMode="cover"
-                      />
-                    </GestureDetector>
-                  )}
-                </View>
-
-                {/* Instructions */}
-                <View className="mt-6 items-center">
-                  <View className="flex-row items-center mb-2">
-                    <Move size={16} color={colors.text.secondary} />
-                    <Text style={{ fontSize: 14, color: colors.text.secondary, marginLeft: 8 }}>
-                      Drag to reposition
-                    </Text>
-                  </View>
-                  <View className="flex-row items-center">
-                    <ZoomIn size={16} color={colors.text.secondary} />
-                    <Text style={{ fontSize: 14, color: colors.text.secondary, marginLeft: 8 }}>
-                      Pinch to zoom
-                    </Text>
-                  </View>
-                </View>
-              </View>
-          </SafeAreaView>
-        </GestureHandlerRootView>
-      </Modal>
-
-      {/* Feedback Modal */}
-      <FeedbackModal
-        visible={showFeedbackModal}
-        onClose={() => setShowFeedbackModal(false)}
-      />
     </View>
   );
 }

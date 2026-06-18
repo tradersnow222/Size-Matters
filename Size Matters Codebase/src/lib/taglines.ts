@@ -9,16 +9,12 @@ export const taglines = {
     "Go Big or Go Home",
   ],
   slider: {
-    // 25% - Severely shrunk
-    tiny: ["Cold Water Vibes", "The Pool Was Chilly", "Shrinkage Szn", "It's... Cozy"],
     // 50% - Half size
     small: ["A Grower, Not a Shower", "Below Average... For Now", "Modest Proportions", "Room Temperature Confidence"],
     // 75% - Slightly shrunk
     modest: ["Suspiciously Humble", "Under-Promise Territory", "The Honest Fisherman's Curse", "Almost Believable"],
     // 100% - Original
     original: ["Boring. You Can Do Better.", "Reality is Overrated", "Where's Your Sense of Adventure?", "Vanilla Mode"],
-    // 150% - Slightly enlarged
-    enhanced: ["Now We're Flirting", "A Gentleman's Stretch", "White Lie Territory", "Just the Tip of the Iceberg"],
     // 200% - Double size
     large: ["Compensating? Maybe.", "Big Fish Energy", "That's What Legends Are Made Of", "Impressive... If True"],
     // 300% - Massive
@@ -65,17 +61,15 @@ export const getRandomTagline = (category: keyof typeof taglines): string => {
 };
 
 export const getSliderTagline = (scale: number): string => {
-  // Match exact preset values - use random taglines per preset
+  // Match the slider's snap presets (0.5, 0.75, 1.0, 2.0, 3.0) - random tagline per preset
   const getRandomFromArray = (arr: string[]) => arr[Math.floor(Math.random() * arr.length)];
 
-  if (scale === 0.25) return getRandomFromArray(taglines.slider.tiny);
-  if (scale === 0.5) return getRandomFromArray(taglines.slider.small);
+  if (scale <= 0.5) return getRandomFromArray(taglines.slider.small);
   if (scale === 0.75) return getRandomFromArray(taglines.slider.modest);
   if (scale === 1.0) return getRandomFromArray(taglines.slider.original);
-  if (scale === 1.5) return getRandomFromArray(taglines.slider.enhanced);
-  if (scale === 2.0) return getRandomFromArray(taglines.slider.large);
-  if (scale === 3.0) return getRandomFromArray(taglines.slider.massive);
-  // Fallback for any other value (shouldn't happen with snapping)
+  if (scale >= 3.0) return getRandomFromArray(taglines.slider.massive);
+  if (scale >= 2.0) return getRandomFromArray(taglines.slider.large);
+  // Fallback for any value between presets
   return getRandomFromArray(taglines.slider.original);
 };
 

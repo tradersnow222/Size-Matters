@@ -44,8 +44,13 @@ const TAP_SOUND_ASSETS = [
 
 let currentSound: Audio.Sound | null = null;
 let loadedSounds: Audio.Sound[] = [];
+// The game remounts on every resize; load the shared sound pool only once so
+// we don't leak Audio.Sound instances on each remount.
+let soundsInitialized = false;
 
 const loadSounds = async () => {
+  if (soundsInitialized) return;
+  soundsInitialized = true;
   try {
     await Audio.setAudioModeAsync({
       playsInSilentModeIOS: true,
@@ -61,6 +66,7 @@ const loadSounds = async () => {
     );
     loadedSounds = sounds;
   } catch (e) {
+    soundsInitialized = false;
     console.log('Failed to load sounds:', e);
   }
 };

@@ -294,9 +294,6 @@ export const hasActiveSubscription = async (): Promise<
   const activeSubscriptions = customerInfoResult.data.activeSubscriptions || [];
   const hasSubscription = activeSubscriptions.length > 0;
 
-  console.log('[RevenueCat] Active subscriptions:', activeSubscriptions);
-  console.log('[RevenueCat] Has active subscription:', hasSubscription);
-
   return { ok: true, data: hasSubscription };
 };
 

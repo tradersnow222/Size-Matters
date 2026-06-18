@@ -34,13 +34,11 @@ const FLUX_API_URL = 'https://api.bfl.ai/v1/flux-kontext-pro';
  */
 export async function detectFishInImage(imageUri: string): Promise<FishDetectionResult> {
   try {
-    console.log('[FishEditor] Detecting fish in image...');
-
     const base64 = await FileSystem.readAsStringAsync(imageUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
 
-    // Use OpenAI for fish detection
+    // Use OpenAI (vision) for fish detection
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
@@ -48,7 +46,7 @@ export async function detectFishInImage(imageUri: string): Promise<FishDetection
         Authorization: `Bearer ${process.env.EXPO_PUBLIC_VIBECODE_OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.4-mini',
         input: [{
           role: 'user',
           content: [
@@ -85,8 +83,6 @@ Examples:
     const data = await response.json();
     const text = data.output?.[0]?.content?.[0]?.text || data.choices?.[0]?.message?.content || '';
 
-    console.log('[FishEditor] Detection response:', text);
-
     // Parse JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -105,7 +101,6 @@ Examples:
           result.suggestion = parsed.description;
         }
 
-        console.log('[FishEditor] Detection result:', result);
         return result;
       } catch (parseError) {
         console.log('[FishEditor] Failed to parse detection response');
@@ -189,8 +184,6 @@ function generateFluxPrompt(scale: number, species?: string): string {
  */
 async function pollFluxResult(pollingUrl: string, maxAttempts: number = 60): Promise<FluxPollResponse> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    console.log(`[FishEditor] Polling attempt ${attempt + 1}/${maxAttempts}...`);
-
     const response = await fetch(pollingUrl, {
       method: 'GET',
       headers: {
@@ -205,7 +198,6 @@ async function pollFluxResult(pollingUrl: string, maxAttempts: number = 60): Pro
     }
 
     const data: FluxPollResponse = await response.json();
-    console.log('[FishEditor] Poll status:', data.status);
 
     if (data.status === 'Ready' && data.result?.sample) {
       return data;
@@ -251,9 +243,6 @@ export async function resizeFishWithFlux(
   species?: string
 ): Promise<FishEditResult> {
   try {
-    console.log('[FishEditor] Starting Flux fish resize');
-    console.log('[FishEditor] Scale:', scale);
-
     // If scale is 1, return original
     if (scale === 1) {
       return { success: true, editedImageUri: imageUri };
@@ -266,8 +255,6 @@ export async function resizeFishWithFlux(
 
     // Generate prompt based on scale (and species, when detected)
     const prompt = generateFluxPrompt(scale, species);
-    console.log('[FishEditor] Resizing species:', species || '(unknown)');
-    console.log('[FishEditor] Flux prompt:', prompt);
 
     // Make initial request to Flux Kontext API
     const response = await fetch(FLUX_API_URL, {
@@ -284,8 +271,6 @@ export async function resizeFishWithFlux(
       }),
     });
 
-    console.log('[FishEditor] Flux response status:', response.status);
-
     if (!response.ok) {
       const errorText = await response.text();
       console.log('[FishEditor] Flux API Error:', errorText);
@@ -298,16 +283,13 @@ export async function resizeFishWithFlux(
     }
 
     const data = await response.json();
-    console.log('[FishEditor] Flux initial response:', JSON.stringify(data));
 
     if (!data.polling_url && !data.id) {
-      console.log('[FishEditor] No polling URL in response');
       return { success: false, error: 'Invalid response from Flux API', errorType: 'api_error' };
     }
 
     // Poll for result
     const pollingUrl = data.polling_url || `https://api.bfl.ai/v1/get_result?id=${data.id}`;
-    console.log('[FishEditor] Polling URL:', pollingUrl);
 
     const result = await pollFluxResult(pollingUrl);
 
@@ -316,10 +298,8 @@ export async function resizeFishWithFlux(
     }
 
     // Download the result image
-    console.log('[FishEditor] Downloading result image...');
     const localUri = await downloadImage(result.result.sample);
 
-    console.log('[FishEditor] Success! Image saved to:', localUri);
     return { success: true, editedImageUri: localUri };
 
   } catch (error) {

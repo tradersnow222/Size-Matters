@@ -25,8 +25,6 @@ interface GlowingButtonProps {
   style?: ViewStyle;
 }
 
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
-
 export function GlowingButton({
   onPress,
   label,

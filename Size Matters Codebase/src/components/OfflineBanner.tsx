@@ -1,7 +1,7 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
-import Animated, { FadeIn, FadeOut, SlideInUp, SlideOutUp } from 'react-native-reanimated';
-import { WifiOff, RefreshCw } from 'lucide-react-native';
+import { View, Text } from 'react-native';
+import Animated, { SlideInUp, SlideOutUp } from 'react-native-reanimated';
+import { WifiOff } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNetworkStatus } from '@/lib/useNetworkStatus';
 import { colors, spacing } from '@/lib/design';

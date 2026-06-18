@@ -454,11 +454,7 @@ export default function GalleryScreen() {
   const shareableImageRef = useRef<ShareableImageRef>(null);
 
   useEffect(() => {
-    useAppStore.getState().loadFromStorage().then(() => {
-      const state = useAppStore.getState();
-      console.log('Gallery: Loaded photos count:', state.photos.length);
-      console.log('Gallery: Photo IDs:', state.photos.map(p => p.id));
-    });
+    useAppStore.getState().loadFromStorage();
   }, []);
 
   // Keep selectedPhoto in sync with the store (e.g., when isUnlocked changes)
@@ -488,19 +484,14 @@ export default function GalleryScreen() {
     // Get the fresh photo data from the store to check current unlock status
     const freshPhoto = photos.find(p => p.id === photo.id) ?? photo;
 
-    // Debug: log the photo state
-    console.log('handleShare - photo.id:', photo.id, 'freshPhoto.isUnlocked:', freshPhoto.isUnlocked, 'isPremium:', isPremium);
-
     // If premium or photo is unlocked, share directly without watermark
     if (isPremium || freshPhoto.isUnlocked === true) {
-      console.log('Sharing directly - premium or unlocked');
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       await performShare(freshPhoto);
       return;
     }
 
     // Otherwise, show watermark confirmation popup
-    console.log('Showing watermark confirmation popup');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setPendingSharePhoto(freshPhoto);
     setShowWatermarkConfirm(true);

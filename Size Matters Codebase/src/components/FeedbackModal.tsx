@@ -15,6 +15,7 @@ import Animated, { FadeIn, SlideInUp } from 'react-native-reanimated';
 import { X, Send } from 'lucide-react-native';
 import { colors, spacing } from '@/lib/design';
 import { useAppStore } from '@/lib/store';
+import { getAppStoreReviewUrl, sendFeedbackEmail } from '@/lib/appConfig';
 
 interface FeedbackModalProps {
   visible: boolean;
@@ -47,17 +48,16 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
     setHasRatedApp(true);
     setLastFeedbackPromptTime(Date.now());
 
-    // Open App Store page for rating
-    // The app ID will need to be replaced with the actual App Store ID once published
-    const appStoreUrl = Platform.select({
-      ios: 'https://apps.apple.com/app/id000000000?action=write-review', // Replace with actual App Store ID
-      default: 'https://apps.apple.com/app/id000000000',
-    });
-
-    try {
-      await Linking.openURL(appStoreUrl);
-    } catch (error) {
-      console.log('Could not open App Store:', error);
+    // Open the App Store review page once the App Store ID has been configured
+    // (see APP_STORE_ID in lib/appConfig). Until the app is published there is
+    // no ID, so we thank the user rather than open a broken page.
+    const reviewUrl = getAppStoreReviewUrl();
+    if (reviewUrl) {
+      try {
+        await Linking.openURL(reviewUrl);
+      } catch (error) {
+        console.log('Could not open App Store:', error);
+      }
     }
 
     setStep('submitted');
@@ -73,12 +73,9 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsSubmitting(true);
 
-    // In a real app, you'd send this to your backend
-    // For now, just log it and simulate a delay
-    console.log('User feedback submitted:', feedback);
-
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Deliver the feedback to the support inbox (native mail composer, with a
+    // mailto fallback) so it is never silently dropped.
+    await sendFeedbackEmail('Size Matters Feedback', feedback.trim());
 
     setHasProvidedFeedback(true);
     setLastFeedbackPromptTime(Date.now());
