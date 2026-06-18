@@ -85,8 +85,8 @@ src/
 - NativeWind (TailwindCSS) for styling
 - React Query for async state
 - Zustand for local state
-- Flux 2 Pro API (Black Forest Labs) for AI fish resizing
-- OpenAI API for fish detection (gpt-4o-mini)
+- FLUX.1 Kontext Pro (Black Forest Labs) for AI fish resizing
+- OpenAI API for fish detection (gpt-5.4-mini vision)
 - expo-image-picker for photo selection
 - expo-sharing for social sharing
 - expo-media-library for saving to camera roll
@@ -116,8 +116,10 @@ The app follows Apple Human Interface Guidelines for:
 Located at `src/lib/design.ts` - centralized colors, typography, spacing, and animation configs
 
 ## Environment Variables Required
-- `EXPO_PUBLIC_VIBECODE_FLUX_API_KEY` - Flux API key (Black Forest Labs) for image editing
-- `EXPO_PUBLIC_VIBECODE_OPENAI_API_KEY` - OpenAI API key for fish detection
+Set in `.env` (gitignored) for local dev, and as EAS environment variables for builds:
+- `EXPO_PUBLIC_FLUX_API_KEY` - Flux API key (Black Forest Labs) for image editing
+- `EXPO_PUBLIC_OPENAI_API_KEY` - OpenAI API key for fish detection
+- `EXPO_PUBLIC_REVENUECAT_APPLE_KEY` / `EXPO_PUBLIC_REVENUECAT_GOOGLE_KEY` / `EXPO_PUBLIC_REVENUECAT_TEST_KEY` - RevenueCat SDK keys
 
 ## Humorous Taglines
 The app is packed with fishing humor:

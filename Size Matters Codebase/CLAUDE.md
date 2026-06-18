@@ -1,153 +1,47 @@
-<stack>
-  Expo SDK 53, React Native 0.76.7, bun (not npm).
-  React Query for server/async state.
-  NativeWind + Tailwind v3 for styling.
-  react-native-reanimated v3 for animations (preferred over Animated from react-native).
-  react-native-gesture-handler for gestures.
-  lucide-react-native for icons.
-  All packages are pre-installed. DO NOT install new packages unless they are @expo-google-font packages or pure JavaScript helpers like lodash, dayjs, etc.
-</stack>
+# Size Matters — Project Guide
 
-<structure>
-  src/app/          — Expo Router file-based routes (src/app/_layout.tsx is root). Add new screens to this folder.
-  src/components/   — Reusable UI components. Add new components to this folder.
-  src/lib/          — Utilities: cn.ts (className merge), example-context.ts (state pattern)
-</structure>
+A mobile app for anglers: upload a catch photo and AI resizes the fish (50%–300%) for bragging rights. Detect with OpenAI vision, resize with FLUX.1 Kontext Pro, monetize with a watermark paywall via RevenueCat.
 
-<typescript>
-  Explicit type annotations for useState: `useState<Type[]>([])` not `useState([])`
-  Null/undefined handling: use optional chaining `?.` and nullish coalescing `??`
-  Include ALL required properties when creating objects — TypeScript strict mode is enabled.
-</typescript>
+**Status: migrated off the Vibecode no-code platform.** Builds and App Store releases are now owned via EAS Build under the developer's own Apple account. Do NOT reintroduce any of: `@vibecodeapp/*` packages, `withVibecodeMetro`, `EXPO_PUBLIC_VIBECODE_*` env vars, or the Vibecode React Native patches.
 
-<environment>
-  You are in Vibecode. The system manages git and the dev server (port 8081).
-  DO NOT: manage git, touch the dev server, or check its state.
-  The user views the app through Vibecode App.
-  The user cannot see the code or interact with the terminal. Do not tell the user to do anything with the code or terminal.
-  You can see logs in the expo.log file.
-  The Vibecode App has tabs like ENV tab, API tab, LOGS tab. You can ask the user to use these tabs to view the logs, add enviroment variables, or give instructions for APIs like OpenAI, Nanobanana, Grok, Elevenlabs, etc. but first try to implement the functionality yourself.
-  The user is likely non-technical, communicate with them in an easy to understand manner.
-  If the user's request is vague or ambitious, scope down to specific functionality. Do everything for them.
-  For images, use URLs from unsplash.com. You can also tell the user they can use the IMAGES tab to generate and uplooad images.
-</environment>
+## Stack
+- Expo SDK 53, React Native 0.79.6, **bun** (not npm)
+- Expo Router (file-based routes in `src/app/`)
+- NativeWind + Tailwind v3 — use `cn()` from `src/lib/cn.ts` to merge classNames
+- React Query (async/server state), Zustand (local state, persisted via AsyncStorage)
+- react-native-reanimated v3, react-native-gesture-handler
+- RevenueCat (`react-native-purchases`) for payments
 
+## Structure
+- `src/app/` — routes. `_layout.tsx` is root; `(tabs)/` holds the 4 main tabs (index / gallery / premium / profile); `feedback.tsx` is the delete-intent quick-action modal.
+- `src/components/` — UI (OnboardingSplash, PaywallModal, ShareableImage, WatermarkOverlay, FeedbackModal, FishTapGame, …)
+- `src/lib/` — `fishEditor.ts` (AI detect + resize), `revenuecatClient.ts` (payments wrapper), `store.ts` (Zustand), `appConfig.ts` (support email, App Store ID), `watermark.ts`, `taglines.ts`, `design.ts` (design tokens).
 
-<forbidden_files>
-  Do not edit: patches/, babel.config.js, metro.config.js, app.json, tsconfig.json, nativewind-env.d.ts
-</forbidden_files>
+## AI integration (`src/lib/fishEditor.ts`)
+- **Detection:** `POST https://api.openai.com/v1/responses`, model `gpt-5.4-mini`. Returns `{hasFish, confidence, species}`. The detected `species` anchors the resize prompt so the fish can't be swapped for another species.
+- **Resize:** `POST https://api.bfl.ai/v1/flux-kontext-pro` (FLUX.1 Kontext Pro), then poll for the result and download it.
+- Keys: `EXPO_PUBLIC_OPENAI_API_KEY`, `EXPO_PUBLIC_FLUX_API_KEY`.
+- ⚠️ These are `EXPO_PUBLIC_*`, so they are bundled into the app binary and are extractable. Planned (Phase 2.5): move both calls behind a backend proxy and drop these keys from the client.
 
-<routing>
-  Expo Router for file-based routing. Every file in src/app/ becomes a route.
-  Never delete or refactor RootLayoutNav from src/app/_layout.tsx.
-  
-  <stack_router>
-    src/app/_layout.tsx (root layout), src/app/index.tsx (matches '/'), src/app/settings.tsx (matches '/settings')
-    Use <Stack.Screen options={{ title, headerStyle, ... }} /> inside pages to customize headers.
-  </stack_router>
-  
-  <tabs_router>
-    Only files registered in src/app/(tabs)/_layout.tsx become actual tabs.
-    Unregistered files in (tabs)/ are routes within tabs, not separate tabs.
-    Nested stacks create double headers — remove header from tabs, add stack inside each tab.
-    At least 2 tabs or don't use tabs at all — single tab looks bad.
-  </tabs_router>
-  
-  <router_selection>
-    Games should avoid tabs — use full-screen stacks instead.
-    For full-screen overlays/modals outside tabs: create route in src/app/ (not src/app/(tabs)/), 
-    then add `<Stack.Screen name="page" options={{ presentation: "modal" }} />` in src/app/_layout.tsx.
-  </router_selection>
-  
-  <rules>
-    Only ONE route can map to "/" — can't have both src/app/index.tsx and src/app/(tabs)/index.tsx.
-    Dynamic params: use `const { id } = useLocalSearchParams()` from expo-router.
-  </rules>
-</routing>
+## Payments (`src/lib/revenuecatClient.ts`)
+- Entitlement: `premium`. Packages: `$rc_monthly`, `$rc_annual` (plus a single-photo unlock product).
+- Keys: `EXPO_PUBLIC_REVENUECAT_APPLE_KEY` (prod iOS), `EXPO_PUBLIC_REVENUECAT_GOOGLE_KEY` (prod Android), `EXPO_PUBLIC_REVENUECAT_TEST_KEY` (dev). These are publishable RevenueCat SDK keys — safe to ship.
+- Products/offerings are configured in the RevenueCat dashboard (developer's own account).
 
-<state>
-  React Query for server/async state. Always use object API: `useQuery({ queryKey, queryFn })`.
-  Never wrap RootLayoutNav directly.
-  React Query provider must be outermost; nest other providers inside it.
-  
-  Use `useMutation` for async operations — no manual `setIsLoading` patterns.
-  Wrap third-party lib calls (RevenueCat, etc.) in useQuery/useMutation for consistent loading states.
-  Reuse query keys across components to share cached data — don't create duplicate providers.
-  
-  For local state, use Zustand. However, most state is server state, so use React Query for that.
-  Always use a selector with Zustand to subscribe only to the specific slice of state you need (e.g., useStore(s => s.foo)) rather than the whole store to prevent unnecessary re-renders. Make sure that the value returned by the selector is a primitive. Do not execute store methods in selectors; select data/functions, then compute outside the selector.
-  For persistence: use AsyncStorage inside context hook providers. Only persist necessary data.
-  Split ephemeral from persisted state to avoid hydration bugs.
-</state>
+## Environment variables
+Local dev: put them in `.env` (gitignored — see `.env.example`). Builds: set them as EAS environment variables. Required: the two AI keys + three RevenueCat keys above. (The unused Vibecode-injected keys — Anthropic / Grok / Google / ElevenLabs — have been removed.)
 
-<safearea>
-  Import from react-native-safe-area-context, NOT from react-native.
-  Skip SafeAreaView inside tab stacks with navigation headers.
-  Skip when using native headers from Stack/Tab navigator.
-  Add when using custom/hidden headers.
-  For games: use useSafeAreaInsets hook instead.
-</safearea>
+## Build & release (EAS — managed workflow, no `ios/` or `android/` folders)
+- Install deps: `bun install`
+- Dev server: `bun start`
+- Builds & submissions go through EAS: `eas build` / `eas submit` (configured in `eas.json`).
+- **Before the FIRST build, verify:**
+  1. `ios.bundleIdentifier` is `com.vibecode.reelsize.o65mr2` — the **immutable** bundle ID of the live App Store listing (id `6757819997`) under your Apple account. Do NOT change it (bundle IDs can't be changed on an existing app); it must stay exactly this or updates won't reach the existing listing. The "vibecode" in the string is just the original auto-generated identifier — not a functional dependency.
+  2. Real OpenAI + Flux keys are present in the EAS environment (the local `.env` may carry placeholders).
+  3. Bump `ios.buildNumber` every build, and `version` for each new App Store version.
 
-<data>
-  Create realistic mock data when you lack access to real data.
-  For image analysis: actually send to LLM don't mock.
-</data>
-
-<design>
-  Don't hold back. This is mobile — design for touch, thumb zones, glanceability.
-  Inspiration: iOS, Instagram, Airbnb, Coinbase, polished habit trackers.
-
-  <avoid>
-    Purple gradients on white, generic centered layouts, predictable patterns.
-    Web-like designs on mobile. Overused fonts (Space Grotesk, Inter).
-  </avoid>
-
-  <do>
-    Cohesive themes with dominant colors and sharp accents.
-    High-impact animations: progress bars, button feedback, haptics.
-    Depth via gradients and patterns, not flat solids.
-    Install `@expo-google-fonts/{font-name}` for fonts (eg: `@expo-google-fonts/inter`)
-    Use zeego for context menus and dropdowns (native feel). Lookup the documentation on zeego.dev to see how to use it.
-  </do>
-</design>
-
-<mistakes>
-  <styling>
-    Use Nativewind for styling. Use cn() helper from src/lib/cn.ts to merge classNames when conditionally applying classNames or passing classNames via props.
-    CameraView, LinearGradient, and Animated components DO NOT support className. Use inline style prop.
-    Horizontal ScrollViews will expand vertically to fill flex containers. Add `style={{ flexGrow: 0 }}` to constrain height to content.
-  </styling>
-
-  <camera>
-    Use CameraView from expo-camera, NOT the deprecated Camera import.
-    import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
-    Use style={{ flex: 1 }}, not className.
-    Overlay UI must be absolute positioned inside CameraView.
-  </camera>
-
-  <react_native>
-    No Node.js buffer in React Native — don't import from 'buffer'.
-  </react_native>
-
-  <ux>
-    Use Pressable over TouchableOpacity.
-    Use custom modals, not Alert.alert().
-    Ensure keyboard is dismissable and doesn't obscure inputs. This is much harder to implement than it seems. You can use the react-native-keyboard-controller package to help with this. But, make sure to look up the documentation before implementing.
-  </ux>
-
-  <outdated_knowledge>
-    Your react-native-reanimated and react-native-gesture-handler training may be outdated. Look up current docs before implementing.
-  </outdated_knowledge>
-</mistakes>
-
-<appstore>
-  Cannot assist with App Store or Google Play submission processes (app.json, eas.json, EAS CLI commands).
-  For submission help, click "Share" on the top right corner on the Vibecode App and select "Submit to App Store".
-</appstore> 
-
-<skills>
-You have access to a few skills in the `.claude/skills` folder. Use them to your advantage.
-- ai-apis-like-chatgpt: Use this skill when the user asks you to make an app that requires an AI API.
-- expo-docs: Use this skill when the user asks you to use an Expo SDK module or package that you might not know much about.
-- frontend-app-design: Use this skill when the user asks you to design a frontend app component or screen.
-</skills>
+## Conventions
+- TypeScript strict: annotate `useState<T[]>([])`; use optional chaining `?.` and `??`.
+- Use `Pressable` (not `TouchableOpacity`); custom modals (not `Alert.alert`).
+- Zustand: select primitive slices (`useStore(s => s.foo)`); don't run store methods inside selectors.
+- SafeArea from `react-native-safe-area-context`. `CameraView`, `LinearGradient`, and `Animated` components don't accept `className` — use the `style` prop.

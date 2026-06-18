@@ -41,7 +41,6 @@
     "@shopify/flash-list": "1.7.6",
     "@shopify/react-native-skia": "v2.0.3",
     "@tanstack/react-query": "5.90.2",
-    "@vibecodeapp/sdk": "^0.4.14",
     "burnt": "^0.13.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
@@ -163,8 +162,5 @@
     "react-native-css-interop": "0.1.22",
     "react-native-reanimated": "3.17.4"
   },
-  "patchedDependencies": {
-    "react-native@0.79.6": "patches/react-native@0.79.6.patch",
-    "expo-asset@11.1.5": "patches/expo-asset@11.1.5.patch"
-  }
+  "patchedDependencies": {}
 }

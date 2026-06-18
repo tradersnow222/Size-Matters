@@ -24,7 +24,7 @@ interface FluxPollResponse {
   };
 }
 
-const FLUX_API_KEY = process.env.EXPO_PUBLIC_VIBECODE_FLUX_API_KEY!;
+const FLUX_API_KEY = process.env.EXPO_PUBLIC_FLUX_API_KEY!;
 // Using FLUX.1 Kontext Pro - specifically designed for local object editing
 const FLUX_API_URL = 'https://api.bfl.ai/v1/flux-kontext-pro';
 
@@ -43,7 +43,7 @@ export async function detectFishInImage(imageUri: string): Promise<FishDetection
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.EXPO_PUBLIC_VIBECODE_OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
         model: 'gpt-5.4-mini',
