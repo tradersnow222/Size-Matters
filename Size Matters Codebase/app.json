@@ -17,7 +17,10 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.vibecode.reelsize.o65mr2",
-      "buildNumber": "1"
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "edgeToEdgeEnabled": true,
