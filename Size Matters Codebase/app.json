@@ -44,7 +44,11 @@
             }
           ]
         }
-      ]
+      ],
+      "expo-asset",
+      "expo-video",
+      "expo-web-browser",
+      "react-native-edge-to-edge"
     ],
     "experiments": {
       "typedRoutes": true
