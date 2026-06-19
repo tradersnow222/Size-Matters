@@ -2,6 +2,7 @@
   "expo": {
     "name": "Size Matters",
     "slug": "size-matters",
+    "owner": "westhaven-holdings",
     "scheme": "sizematters",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -44,6 +45,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "013bb586-6e44-4aa2-b903-702dab8fc3f5"
+      }
     }
   }
 }
