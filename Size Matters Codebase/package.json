@@ -118,7 +118,6 @@
     "react-native-mmkv": "^3.2.0",
     "react-native-pager-view": "6.7.1",
     "react-native-purchases": "^9.6.7",
-    "react-native-purchases-ui": "^9.6.7",
     "react-native-reanimated": "3.17.4",
     "react-native-safe-area-context": "5.4.0",
     "react-native-screens": "~4.11.1",
