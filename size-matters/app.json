@@ -47,7 +47,8 @@
       ],
       "expo-asset",
       "expo-web-browser",
-      "react-native-edge-to-edge"
+      "react-native-edge-to-edge",
+      "./plugins/withFmtCpp17"
     ],
     "experiments": {
       "typedRoutes": true
