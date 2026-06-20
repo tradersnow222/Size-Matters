@@ -4,7 +4,8 @@ interface FishEditResult {
   success: boolean;
   editedImageUri?: string;
   error?: string;
-  errorType?: 'no_fish' | 'api_error' | 'unknown';
+  /** 'config_error' = keys missing/invalid in this build (a setup problem, not a photo problem). */
+  errorType?: 'no_fish' | 'api_error' | 'config_error' | 'unknown';
 }
 
 interface FishDetectionResult {
@@ -24,9 +25,24 @@ interface FluxPollResponse {
   };
 }
 
-const FLUX_API_KEY = process.env.EXPO_PUBLIC_FLUX_API_KEY!;
+const FLUX_API_KEY = process.env.EXPO_PUBLIC_FLUX_API_KEY;
+const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
 // Using FLUX.1 Kontext Pro - specifically designed for local object editing
 const FLUX_API_URL = 'https://api.bfl.ai/v1/flux-kontext-pro';
+
+/**
+ * True only for a key that could plausibly be real. Catches the #1 build/migration
+ * failure: shipping with a missing key or an `sk-proj-xxxx` / `bfl_xxxx` placeholder
+ * from .env.example. (An otherwise-real-looking but revoked key is still caught at
+ * runtime via the 401/403 handling below.)
+ */
+function isUsableKey(key: string | undefined): key is string {
+  if (!key) return false;
+  const k = key.trim();
+  if (k.length < 20) return false; // real OpenAI / BFL keys are well over 20 chars
+  if (/x{4,}/i.test(k)) return false; // "xxxxxxxx" placeholder
+  return true;
+}
 
 /**
  * Validates if an image contains a fish before attempting resize
@@ -34,6 +50,16 @@ const FLUX_API_URL = 'https://api.bfl.ai/v1/flux-kontext-pro';
  */
 export async function detectFishInImage(imageUri: string): Promise<FishDetectionResult> {
   try {
+    if (!isUsableKey(OPENAI_API_KEY)) {
+      console.warn(
+        '[FishEditor] EXPO_PUBLIC_OPENAI_API_KEY is missing or a placeholder in this build — ' +
+        'fish detection and species tagging are disabled (resize will fall back to a generic prompt). ' +
+        'Set a real key as an EAS environment variable (and in .env for local dev).'
+      );
+      // Non-blocking: let the user proceed to resize.
+      return { hasFish: true, confidence: 'low' };
+    }
+
     const base64 = await FileSystem.readAsStringAsync(imageUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
@@ -43,7 +69,7 @@ export async function detectFishInImage(imageUri: string): Promise<FishDetection
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
         model: 'gpt-5.4-mini',
@@ -75,7 +101,14 @@ Examples:
     });
 
     if (!response.ok) {
-      console.log('[FishEditor] Detection API error');
+      if (response.status === 401 || response.status === 403) {
+        console.warn(
+          `[FishEditor] OpenAI detection auth failed (HTTP ${response.status}) — the key is invalid, ` +
+          'revoked, or not included in this build. Detection skipped.'
+        );
+      } else {
+        console.log('[FishEditor] Detection API error (HTTP ' + response.status + ')');
+      }
       // If detection fails, allow the resize to proceed (fail gracefully)
       return { hasFish: true, confidence: 'low' };
     }
@@ -187,7 +220,8 @@ async function pollFluxResult(pollingUrl: string, maxAttempts: number = 60): Pro
     const response = await fetch(pollingUrl, {
       method: 'GET',
       headers: {
-        'x-key': FLUX_API_KEY,
+        // Resize already validated the key before polling begins.
+        'x-key': FLUX_API_KEY ?? '',
       },
     });
 
@@ -248,6 +282,21 @@ export async function resizeFishWithFlux(
       return { success: true, editedImageUri: imageUri };
     }
 
+    // Fail fast with a precise reason if this build has no usable resize key.
+    // (Otherwise BFL returns 403 "Not authenticated", which is indistinguishable
+    // from a genuine image-processing failure in the UI.)
+    if (!isUsableKey(FLUX_API_KEY)) {
+      console.warn(
+        '[FishEditor] EXPO_PUBLIC_FLUX_API_KEY is missing or a placeholder in this build — ' +
+        'the resize API cannot be reached. Set it as an EAS environment variable (and in .env for local dev).'
+      );
+      return {
+        success: false,
+        error: 'Resize isn\'t configured in this build (missing FLUX API key).',
+        errorType: 'config_error',
+      };
+    }
+
     // Read image as base64
     const base64 = await FileSystem.readAsStringAsync(imageUri, {
       encoding: FileSystem.EncodingType.Base64,
@@ -273,7 +322,17 @@ export async function resizeFishWithFlux(
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.log('[FishEditor] Flux API Error:', errorText);
+      console.log('[FishEditor] Flux API Error:', response.status, errorText);
+
+      if (response.status === 401 || response.status === 403) {
+        // BFL returns 403 "Not authenticated" for a missing/empty key and 422
+        // "Invalid API key format" for a malformed one — both are setup problems.
+        return {
+          success: false,
+          error: `Resize API rejected the credentials (HTTP ${response.status}). The FLUX API key is invalid, revoked, or not included in this build.`,
+          errorType: 'config_error',
+        };
+      }
 
       if (response.status === 402) {
         return { success: false, error: 'Insufficient Flux API credits', errorType: 'api_error' };

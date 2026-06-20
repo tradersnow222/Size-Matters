@@ -1141,6 +1141,13 @@ export default function HomeScreen() {
                     <Text className="text-slate-400 text-center text-xs mb-2">
                       The AI had trouble processing this image. Try a different photo or angle.
                     </Text>
+                    {/* Dev-only: show the real failure (e.g. an auth/config error) so a
+                        misconfigured build isn't mistaken for a bad photo. */}
+                    {__DEV__ && resizeFishMutation.error instanceof Error && (
+                      <Text className="text-red-300/70 text-center text-[10px] mb-2">
+                        {resizeFishMutation.error.message}
+                      </Text>
+                    )}
                     <Pressable
                       onPress={pickImage}
                       className="bg-slate-700/50 rounded-lg py-2 active:scale-98"
