@@ -1,0 +1,41 @@
+# .easignore — controls what gets uploaded to EAS Build.
+# When present, EAS uses this INSTEAD of .gitignore, so this is a full superset:
+# it repeats the important .gitignore excludes AND drops the heavy public/ dev
+# screenshots that bloated the build archive to ~466 MB.
+
+# --- dependencies (reinstalled on the build server) ---
+node_modules/
+
+# --- secrets / credentials (provided via EAS env vars; never upload) ---
+.env
+.env.*
+*.p8
+*.p12
+*.key
+*.jks
+*.mobileprovision
+*.pem
+
+# --- generated native projects (EAS runs prebuild) ---
+/ios
+/android
+
+# --- Expo / Metro / build caches ---
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+*.tsbuildinfo
+expo.log
+
+# --- logs & OS cruft ---
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+
+# --- public/ is web-only dev screenshots (~445 MB) not needed for native
+#     builds. Keep ONLY the sound effects that FishTapGame.tsx require()s. ---
+public/*
+!public/*.mp3
