@@ -1,0 +1,19 @@
+name = "size-matters-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-06-20"
+
+# Non-secret config (override per-environment as needed).
+[vars]
+RESIZE_MODEL = "gemini-3.1-flash-image"
+DETECT_MODEL = "gemini-2.5-flash"
+DAILY_FREE_LIMIT = "50"
+
+# Optional: per-IP daily rate limiting. Create the namespace, then uncomment + paste the id:
+#   wrangler kv namespace create RATE_LIMIT
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT"
+# id = "PASTE_KV_ID_HERE"
+
+# Secrets are NOT stored here — set them with `wrangler secret put`:
+#   wrangler secret put GEMINI_API_KEY      (required)
+#   wrangler secret put APP_SHARED_SECRET   (optional gate; must match EXPO_PUBLIC_PROXY_SECRET)

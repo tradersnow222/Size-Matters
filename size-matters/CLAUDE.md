@@ -18,10 +18,11 @@ A mobile app for anglers: upload a catch photo and AI resizes the fish (50%–30
 - `src/lib/` — `fishEditor.ts` (AI detect + resize), `revenuecatClient.ts` (payments wrapper), `store.ts` (Zustand), `appConfig.ts` (support email, App Store ID), `watermark.ts`, `taglines.ts`, `design.ts` (design tokens).
 
 ## AI integration (`src/lib/fishEditor.ts`)
-- **Detection:** `POST https://api.openai.com/v1/responses`, model `gpt-5.4-mini`. Returns `{hasFish, confidence, species}`. The detected `species` anchors the resize prompt so the fish can't be swapped for another species.
-- **Resize:** `POST https://api.bfl.ai/v1/flux-kontext-pro` (FLUX.1 Kontext Pro), then poll for the result and download it.
-- Keys: `EXPO_PUBLIC_OPENAI_API_KEY`, `EXPO_PUBLIC_FLUX_API_KEY`.
-- ⚠️ These are `EXPO_PUBLIC_*`, so they are bundled into the app binary and are extractable. Planned (Phase 2.5): move both calls behind a backend proxy and drop these keys from the client.
+- **Detection:** Gemini `gemini-2.5-flash` (`GEMINI_TEXT_MODEL`) via `.../{model}:generateContent` with `responseMimeType: application/json` + a response schema, so output parses cleanly. Returns `{hasFish, confidence, species}`. The detected `species` anchors the resize prompt so the fish can't be swapped for another species. (Migrated off OpenAI gpt-5.4-mini on 2026-06-20 — one provider, one key.)
+- **Resize (PRIMARY):** Google "Nano Banana" — `POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent`, single synchronous call returning an inline base64 image. Chosen over FLUX because instruction editors that *preserve* structure (FLUX Kontext) barely apply large size changes; Nano Banana actually resizes the fish. Exact factors aren't relied upon — the prompt anchors size to an in-frame reference (the angler's torso/forearm) and lets only the hands/arms re-pose. Model id is the `GEMINI_IMAGE_MODEL` constant (`gemini-3.1-flash-image` GA default — more dramatic/believable than `gemini-2.5-flash-image`; `gemini-3-pro-image` for top quality). ⚠️ Gemini image models are **paid-tier only** — the key's Google project must have billing enabled (a free-tier key returns HTTP 429 `limit: 0`).
+- **Resize (FALLBACK):** FLUX.1 Kontext Pro (`POST https://api.bfl.ai/v1/flux-kontext-pro`, then poll). Kept live behind the `RESIZE_PROVIDER` flag at the top of `fishEditor.ts` — set it to `'flux'` for instant rollback.
+- Keys: `EXPO_PUBLIC_GEMINI_API_KEY` (detection + primary resize), `EXPO_PUBLIC_FLUX_API_KEY` (fallback resize). OpenAI is no longer used.
+- ⚠️ These are `EXPO_PUBLIC_*`, so they are bundled into the app binary and are extractable. **Phase 2.5 backend proxy is BUILT** (Cloudflare Worker in `/proxy`, repo root): set `EXPO_PUBLIC_PROXY_URL` (+ optional `EXPO_PUBLIC_PROXY_SECRET`) to route detection+resize through it — then the AI keys live only on the Worker and can be dropped from the client. Empty `EXPO_PUBLIC_PROXY_URL` = direct-to-Google (current default). See `proxy/README.md` to deploy. The Worker owns the resize prompt+model, so you can tune them without an app release.
 
 ## Payments (`src/lib/revenuecatClient.ts`)
 - Entitlement: `premium`. Packages: `$rc_monthly`, `$rc_annual` (plus a single-photo unlock product).
@@ -29,7 +30,7 @@ A mobile app for anglers: upload a catch photo and AI resizes the fish (50%–30
 - Products/offerings are configured in the RevenueCat dashboard (developer's own account).
 
 ## Environment variables
-Local dev: put them in `.env` (gitignored — see `.env.example`). Builds: set them as EAS environment variables. Required: the two AI keys + three RevenueCat keys above. (The unused Vibecode-injected keys — Anthropic / Grok / Google / ElevenLabs — have been removed.)
+Local dev: put them in `.env` (gitignored — see `.env.example`). Builds: set them as EAS environment variables. Required: the two AI keys (Gemini + FLUX fallback) + three RevenueCat keys above. (The unused Vibecode-injected keys — Anthropic / Grok / Google / ElevenLabs — have been removed.)
 
 ## Build & release (EAS — managed workflow, no `ios/` or `android/` folders)
 - Install deps: `bun install`
