@@ -2,7 +2,6 @@ import React, { useRef, useImperativeHandle, forwardRef, useCallback } from 'rea
 import { View, Text, Dimensions, StyleSheet } from 'react-native';
 import { Image } from 'expo-image';
 import { captureRef } from 'react-native-view-shot';
-import { APP_DOWNLOAD_LINK } from '@/lib/watermark';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IMAGE_SIZE = SCREEN_WIDTH - 48;
@@ -43,11 +42,10 @@ export interface ShareableImageRef {
 
 interface ShareableImageProps {
   imageUri: string;
-  scale: number;
   isPremium?: boolean;
 }
 
-export const ShareableImage = forwardRef<ShareableImageRef, ShareableImageProps>(
+export const ShareableImage = React.memo(forwardRef<ShareableImageRef, ShareableImageProps>(
   ({ imageUri, isPremium = false }, ref) => {
     const viewRef = useRef<View>(null);
 
@@ -102,17 +100,12 @@ export const ShareableImage = forwardRef<ShareableImageRef, ShareableImageProps>
                 <Text style={styles.watermarkText}>{WATERMARK_TEXT}</Text>
               </View>
             ))}
-
-            {/* Bottom app link */}
-            <View style={styles.bottomLink}>
-              <Text style={styles.bottomLinkText}>{APP_DOWNLOAD_LINK}</Text>
-            </View>
           </View>
         )}
       </View>
     );
   }
-);
+));
 
 const styles = StyleSheet.create({
   container: {
@@ -141,16 +134,6 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.5)',
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 2,
-  },
-  bottomLink: {
-    position: 'absolute',
-    bottom: 8,
-    right: 10,
-  },
-  bottomLinkText: {
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 10,
-    fontWeight: '600',
   },
 });
 

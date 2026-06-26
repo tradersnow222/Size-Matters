@@ -391,18 +391,28 @@ export function FishTapGame() {
 
   return (
     <View className="items-center flex-1 justify-center px-4">
-      {/* Score and streak display */}
-      <View className="flex-row items-center mb-3 gap-4">
-        <View className="flex-row items-center">
-          <Fish size={28} color="#fbbf24" />
-          <Text className="text-amber-400 text-3xl font-bold ml-2">{score}</Text>
-        </View>
+      {/* Header: a clear call-to-action until the first catch, then the score.
+          Without this, the bobbing fish reads as a passive loading animation. */}
+      <View className="flex-row items-center justify-center mb-3 gap-4" style={{ minHeight: 40 }}>
+        {score === 0 ? (
+          <Text className="text-cyan-300 text-xl font-bold text-center">
+            👆 Tap the fish while you wait!
+          </Text>
+        ) : (
+          <>
+            <View className="flex-row items-center">
+              <Fish size={28} color="#fbbf24" />
+              <Text className="text-amber-400 text-3xl font-bold ml-2">{score}</Text>
+              <Text className="text-amber-400/70 text-base font-semibold ml-1.5">caught</Text>
+            </View>
 
-        {streak >= 3 && (
-          <Animated.View style={streakAnimatedStyle} className="flex-row items-center bg-orange-500/20 px-2 py-1 rounded-full">
-            <Flame size={16} color="#f97316" />
-            <Text className="text-orange-400 text-sm font-bold ml-1">{streak}x</Text>
-          </Animated.View>
+            {streak >= 3 && (
+              <Animated.View style={streakAnimatedStyle} className="flex-row items-center bg-orange-500/20 px-2 py-1 rounded-full">
+                <Flame size={16} color="#f97316" />
+                <Text className="text-orange-400 text-sm font-bold ml-1">{streak}x</Text>
+              </Animated.View>
+            )}
+          </>
         )}
       </View>
 

@@ -82,6 +82,30 @@ const GEMINI_TEXT_MODEL = 'gemini-2.5-flash';
 const FLUX_API_URL = 'https://api.bfl.ai/v1/flux-kontext-pro';
 
 /**
+ * Hard request ceilings. Without these a stalled connection (dropped signal, hung
+ * server) leaves the UI's loading game running forever with no way out. The resize
+ * p50 is ~10–14s and the tail ~30s, so 60s is comfortably past any real success.
+ */
+const RESIZE_TIMEOUT_MS = 60000;
+const DETECT_TIMEOUT_MS = 20000;
+
+/**
+ * fetch() with a hard timeout via AbortController. RN-safe (does not rely on the
+ * newer AbortSignal.timeout static, which isn't guaranteed on Hermes). On timeout
+ * the promise rejects with an AbortError, which callers translate into a friendly
+ * "timed out" message.
+ */
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * True only for a key that could plausibly be real. Catches the #1 build/migration
  * failure: shipping with a missing key or an `sk-proj-xxxx` / `bfl_xxxx` placeholder
  * from .env.example. (An otherwise-real-looking but revoked key is still caught at
@@ -152,7 +176,7 @@ export async function detectFishInImage(imageUri: string): Promise<FishDetection
       'Set "description" to a brief note of what you see.';
 
     // Gemini (vision) for fish detection — JSON schema guarantees a parseable response.
-    const response = await fetch(`${GEMINI_API_BASE}/models/${GEMINI_TEXT_MODEL}:generateContent`, {
+    const response = await fetchWithTimeout(`${GEMINI_API_BASE}/models/${GEMINI_TEXT_MODEL}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -189,7 +213,7 @@ export async function detectFishInImage(imageUri: string): Promise<FishDetection
           { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
         ],
       }),
-    });
+    }, DETECT_TIMEOUT_MS);
 
     if (!response.ok) {
       if (response.status === 400 || response.status === 401 || response.status === 403) {
@@ -375,7 +399,7 @@ async function resizeFishWithGemini(
     const prompt = generateResizePrompt(scale, species);
     const aspectRatio = await getImageAspectRatioLabel(imageUri);
 
-    const response = await fetch(`${GEMINI_API_BASE}/models/${GEMINI_IMAGE_MODEL}:generateContent`, {
+    const response = await fetchWithTimeout(`${GEMINI_API_BASE}/models/${GEMINI_IMAGE_MODEL}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -403,7 +427,7 @@ async function resizeFishWithGemini(
           { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
         ],
       }),
-    });
+    }, RESIZE_TIMEOUT_MS);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -454,8 +478,13 @@ async function resizeFishWithGemini(
 
     return { success: true, editedImageUri: outputUri };
   } catch (error) {
+    const timedOut = error instanceof Error && error.name === 'AbortError';
     console.log('[FishEditor] Gemini resize error:', error);
-    return { success: false, error: String(error), errorType: 'api_error' };
+    return {
+      success: false,
+      error: timedOut ? 'The resize timed out. Check your connection and try again.' : String(error),
+      errorType: 'api_error',
+    };
   }
 }
 

@@ -3,16 +3,16 @@ import {
   View,
   Text,
   Pressable,
-  Image,
   ActivityIndicator,
   Dimensions,
   ScrollView,
   Modal as RNModal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import { useMutation } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
@@ -31,6 +31,7 @@ import Animated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Fish, Upload, Wand2, Share2, RotateCcw, Ruler, ArrowLeftRight, Download, TrendingDown, TrendingUp, Minus, Lock, X, AlertCircle, ImageOff } from 'lucide-react-native';
 import { FishTapGame } from '@/components/FishTapGame';
+import { ResizeStatus } from '@/components/ResizeStatus';
 import { GlowingButton } from '@/components/GlowingButton';
 import { PaywallModal } from '@/components/PaywallModal';
 import { FeedbackModal } from '@/components/FeedbackModal';
@@ -44,6 +45,10 @@ import { ShareableImage, ShareableImageRef } from '@/components/ShareableImage';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IMAGE_SIZE = SCREEN_WIDTH - 48;
+
+// Minimum time the resize overlay (status + game) stays up, so a fast resize
+// doesn't flash the game and vanish before the user can engage with it.
+const MIN_RESIZE_OVERLAY_MS = 2800;
 
 // Maps fish scale value to slider percentage (0-100)
 // Creates a non-linear mapping where 1x is at 50%
@@ -76,11 +81,16 @@ export default function HomeScreen() {
   const [tagline, setTagline] = useState(() => getRandomTagline('home'));
   const [sliderTagline, setSliderTagline] = useState('Original Size');
   const [noPhotoTagline] = useState(() => getRandomTagline('noPhoto'));
-  const [showingBefore, setShowingBefore] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [gameKey, setGameKey] = useState(0); // Key to force game remount
+  // Controlled loading-overlay state, decoupled from the mutation's isPending so we
+  // can enforce a minimum on-screen time (below). Without a floor, a fast resize
+  // makes the FishTapGame flash for a second and vanish, which reads as a glitch.
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStartRef = useRef(0);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showPaywall, setShowPaywall] = useState(false);
   // Whether the current edited image has been unlocked via the single ($0.99)
   // purchase, so it can be shared/saved watermark-free without a subscription.
@@ -114,9 +124,11 @@ export default function HomeScreen() {
   const fishBounce = useSharedValue(0);
   const buttonScale = useSharedValue(1);
   const sliderGlow = useSharedValue(0);
-  const compareSlider = useSharedValue(IMAGE_SIZE); // Start showing edited (full width)
+  // compareSlider = width of the BEFORE (original) overlay clipped from the left.
+  // 0 => before fully hidden => the AFTER (resized) image is shown (the payoff).
+  // IMAGE_SIZE => before covers everything => the original is shown.
+  const compareSlider = useSharedValue(0); // Start by showing the resized result
   const sliderThumbScale = useSharedValue(1); // For thumb grow animation when dragging
-  const uploadGlow = useSharedValue(0); // For upload icon pulsing glow
   const uploadScale = useSharedValue(1); // For upload icon breathing scale
   const button3xScale = useSharedValue(1); // For 3x button nudge animation
   const button3xGlow = useSharedValue(0); // For 3x button glow
@@ -150,14 +162,12 @@ export default function HomeScreen() {
     })
     .onEnd(() => {
       'worklet';
-      // Snap to nearest edge or stay in middle
+      // Snap to an edge when released close to it; otherwise keep the partial split.
       const current = compareSlider.value;
       if (current < IMAGE_SIZE * 0.2) {
         compareSlider.value = withSpring(0);
-        runOnJS(setShowingBefore)(true);
       } else if (current > IMAGE_SIZE * 0.8) {
         compareSlider.value = withSpring(IMAGE_SIZE);
-        runOnJS(setShowingBefore)(false);
       }
       runOnJS(triggerHaptic)();
     }), [triggerHaptic, startSliderPosition, compareSlider, hasInteractedWithSlider, swipeHandleBounce]);
@@ -167,9 +177,10 @@ export default function HomeScreen() {
   }));
 
   const sliderHandleStyle = useAnimatedStyle(() => ({
-    // Combine both transforms: position from compareSlider + bounce animation
+    // Position from compareSlider + bounce nudge. Clamp so the 40px handle stays
+    // fully on-screen even when the slider is parked at either edge.
     transform: [
-      { translateX: compareSlider.value - 20 + swipeHandleBounce.value }
+      { translateX: clamp(compareSlider.value - 20, 0, IMAGE_SIZE - 40) + swipeHandleBounce.value }
     ],
   }));
 
@@ -181,19 +192,17 @@ export default function HomeScreen() {
     useAppStore.getState().loadFromStorage();
   }, []);
 
+  // Clear any pending reveal timer if the screen unmounts mid-resize.
+  useEffect(() => () => {
+    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+  }, []);
+
   useEffect(() => {
     fishBounce.value = withRepeat(
       withSequence(
         withTiming(-8, { duration: 1500, easing: Easing.inOut(Easing.ease) }),
         withTiming(0, { duration: 1500, easing: Easing.inOut(Easing.ease) })
       ),
-      -1,
-      true
-    );
-
-    // Upload icon pulsing glow animation
-    uploadGlow.value = withRepeat(
-      withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.ease) }),
       -1,
       true
     );
@@ -210,20 +219,16 @@ export default function HomeScreen() {
     transform: [{ translateY: fishBounce.value }],
   }));
 
+  // Note: only `transform` is animated here. Animating shadowOpacity/shadowRadius
+  // every frame forces iOS to re-rasterize the shadow path continuously, which
+  // janks the whole UI (including touch responsiveness). The glow is now a cheap
+  // static shadow set on the view itself.
   const uploadIconAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: uploadScale.value }],
-    shadowColor: '#22d3ee',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: uploadGlow.value,
-    shadowRadius: 25 + uploadGlow.value * 20,
   }));
 
   const button3xAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: button3xScale.value }],
-    shadowColor: '#22c55e',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: button3xGlow.value,
-    shadowRadius: 8 + button3xGlow.value * 12,
   }));
 
   // Animated style for upgrade button pulse
@@ -258,7 +263,28 @@ export default function HomeScreen() {
     });
 
     if (!result.canceled) {
-      const imageUri = result.assets[0].uri;
+      const asset = result.assets[0];
+
+      // Downscale before any AI call. A full-resolution catch photo becomes a
+      // multi-MB base64 string that blocks the JS thread (during detect + resize)
+      // and is slow to upload. 1280px wide is plenty for detection, the resize
+      // model, and the on-screen comparison — and makes everything feel instant.
+      let imageUri = asset.uri;
+      try {
+        const TARGET_WIDTH = 1280;
+        const actions =
+          asset.width && asset.width > TARGET_WIDTH
+            ? [{ resize: { width: TARGET_WIDTH } }]
+            : [];
+        const optimized = await ImageManipulator.manipulateAsync(asset.uri, actions, {
+          compress: 0.85,
+          format: ImageManipulator.SaveFormat.JPEG,
+        });
+        imageUri = optimized.uri;
+      } catch (e) {
+        console.log('Image downscale failed, using original:', e);
+      }
+
       setSelectedImage(imageUri);
       setEditedImage(null);
       setFishScale(1.0);
@@ -296,18 +322,35 @@ export default function HomeScreen() {
       return result.editedImageUri!;
     },
     onSuccess: (url) => {
-      setEditedImage(url);
-      compareSlider.value = IMAGE_SIZE; // Reset to show edited image
-      setShowingBefore(false);
-      incrementEdits();
-      if (!isPremium) {
-        decrementFreeEdits();
-      }
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Hold the overlay until it has been up at least MIN_RESIZE_OVERLAY_MS, so a
+      // fast resize doesn't snap the game away the instant it appears. Then reveal.
+      const remaining = Math.max(0, MIN_RESIZE_OVERLAY_MS - (Date.now() - resizeStartRef.current));
+      revealTimerRef.current = setTimeout(() => {
+        revealTimerRef.current = null;
+        setEditedImage(url);
+        // Reveal the resized result: flash the original, then wipe it away
+        // (IMAGE_SIZE -> 0) so the user watches the before→after transform land
+        // on the resized fish. They can drag the handle back to compare.
+        compareSlider.value = IMAGE_SIZE;
+        compareSlider.value = withTiming(0, { duration: 650, easing: Easing.inOut(Easing.ease) });
+        incrementEdits();
+        if (!isPremium) {
+          decrementFreeEdits();
+        }
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setIsResizing(false);
+      }, remaining);
     },
     onError: (error) => {
+      // Surface errors promptly (no min-hold) — a quick config error shouldn't sit
+      // behind the game pretending to work.
+      if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = null;
+      }
       console.log('Fish resize error:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setIsResizing(false);
     },
   });
 
@@ -318,7 +361,7 @@ export default function HomeScreen() {
     cancelAnimation(button3xScale);
     cancelAnimation(button3xGlow);
 
-    const shouldAnimate = selectedImage && !editedImage && fishScale === 1.0 && !noFishDetected && !isValidatingImage && !resizeFishMutation.isPending && !hasUsedSizeButtons;
+    const shouldAnimate = selectedImage && !editedImage && fishScale === 1.0 && !noFishDetected && !isValidatingImage && !isResizing && !hasUsedSizeButtons;
 
     if (shouldAnimate) {
       // Start the nudge animation after a short delay
@@ -353,7 +396,7 @@ export default function HomeScreen() {
       button3xScale.value = withTiming(1, { duration: 200 });
       button3xGlow.value = withTiming(0, { duration: 200 });
     }
-  }, [selectedImage, editedImage, fishScale, noFishDetected, isValidatingImage, resizeFishMutation.isPending, hasUsedSizeButtons]);
+  }, [selectedImage, editedImage, fishScale, noFishDetected, isValidatingImage, isResizing, hasUsedSizeButtons]);
 
   // Animate swipe handle bounce when edited image is shown
   useEffect(() => {
@@ -364,23 +407,23 @@ export default function HomeScreen() {
       // Reset interaction flag for new edited image
       hasInteractedWithSlider.value = false;
 
-      // Start bouncing animation after a short delay (right to left)
+      // Nudge the handle rightward after a short delay. The resized result is
+      // already shown (handle parked at the left), so this hints "drag right to
+      // reveal the original and compare."
       const timeout = setTimeout(() => {
-        // Only start animation if user hasn't interacted yet
-        // Bounce from right to left (negative values) to indicate swiping left to see before
         swipeHandleBounce.value = withRepeat(
           withSequence(
-            withTiming(0, { duration: 100 }), // Start at center
-            withTiming(-20, { duration: 350, easing: Easing.out(Easing.ease) }), // Swipe left
-            withTiming(-5, { duration: 200, easing: Easing.inOut(Easing.ease) }), // Bounce back slightly
-            withTiming(-15, { duration: 150, easing: Easing.inOut(Easing.ease) }), // Swipe left again
-            withTiming(0, { duration: 250, easing: Easing.out(Easing.ease) }), // Return to center
+            withTiming(0, { duration: 100 }), // Start at rest
+            withTiming(20, { duration: 350, easing: Easing.out(Easing.ease) }), // Nudge right
+            withTiming(5, { duration: 200, easing: Easing.inOut(Easing.ease) }), // Settle slightly
+            withTiming(15, { duration: 150, easing: Easing.inOut(Easing.ease) }), // Nudge right again
+            withTiming(0, { duration: 250, easing: Easing.out(Easing.ease) }), // Return to rest
             withTiming(0, { duration: 1500 }) // Pause before repeating
           ),
           -1,
           false
         );
-      }, 800); // Start after image loads
+      }, 800); // Start after the reveal animation finishes
 
       return () => {
         clearTimeout(timeout);
@@ -394,6 +437,7 @@ export default function HomeScreen() {
 
   const handleResize = () => {
     if (!selectedImage) return;
+    if (isResizing) return; // already running (e.g. double-tap during the min-display hold)
     if (!isPremium && freeEditsRemaining <= 0) {
       // This shouldn't happen since button changes, but just in case
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -401,6 +445,12 @@ export default function HomeScreen() {
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+    resizeStartRef.current = Date.now();
+    setIsResizing(true);
     setGameKey((k) => k + 1); // Increment key to force game remount
     resizeFishMutation.mutate({ imageUri: selectedImage, scale: fishScale, species: detectedSpecies });
   };
@@ -586,8 +636,10 @@ export default function HomeScreen() {
     setSaveSuccess(false);
 
     try {
-      // Request permissions
-      const { status } = await MediaLibrary.requestPermissionsAsync();
+      // Request write-only ("add to library") permission — the app only saves,
+      // never reads the library. This shows iOS's lighter "Add to Photos" prompt
+      // and needs only NSPhotoLibraryAddUsageDescription (added in app.json).
+      const { status } = await MediaLibrary.requestPermissionsAsync(true);
       if (status !== 'granted') {
         console.log('Media library permission denied');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -685,6 +737,11 @@ export default function HomeScreen() {
 
   const handleReset = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+    setIsResizing(false);
     setSelectedImage(null);
     setEditedImage(null);
     setFishScale(1.0);
@@ -745,7 +802,15 @@ export default function HomeScreen() {
                   className="flex-1 items-center justify-center active:opacity-80"
                 >
                   <Animated.View
-                    style={uploadIconAnimatedStyle}
+                    style={[
+                      uploadIconAnimatedStyle,
+                      {
+                        shadowColor: '#22d3ee',
+                        shadowOffset: { width: 0, height: 0 },
+                        shadowOpacity: 0.7,
+                        shadowRadius: 22,
+                      },
+                    ]}
                     className="w-28 h-28 rounded-full bg-cyan-800/50 items-center justify-center mb-4 border-2 border-cyan-400/60"
                   >
                     <Upload size={48} color="#22d3ee" />
@@ -763,7 +828,7 @@ export default function HomeScreen() {
                     <Image
                       source={{ uri: editedImage }}
                       style={{ width: IMAGE_SIZE, height: IMAGE_SIZE, position: 'absolute' }}
-                      resizeMode="cover"
+                      contentFit="cover"
                     />
 
                     {/* Watermark overlay for non-premium users - scattered diagonal pattern */}
@@ -801,21 +866,6 @@ export default function HomeScreen() {
                             );
                           })
                         )}
-
-                        {/* Bottom app link */}
-                        <View style={{
-                          position: 'absolute',
-                          bottom: 8,
-                          right: 10,
-                        }}>
-                          <Text style={{
-                            color: 'rgba(255, 255, 255, 0.5)',
-                            fontSize: 10,
-                            fontWeight: '600',
-                          }}>
-                            sizematters.app
-                          </Text>
-                        </View>
                       </View>
                     )}
 
@@ -833,7 +883,7 @@ export default function HomeScreen() {
                       <Image
                         source={{ uri: selectedImage }}
                         style={{ width: IMAGE_SIZE, height: IMAGE_SIZE }}
-                        resizeMode="cover"
+                        contentFit="cover"
                       />
                     </Animated.View>
 
@@ -900,7 +950,7 @@ export default function HomeScreen() {
                   <Image
                     source={{ uri: selectedImage }}
                     style={{ width: '100%', height: '100%' }}
-                    resizeMode="cover"
+                    contentFit="cover"
                   />
 
                   {/* Validating image overlay */}
@@ -910,14 +960,14 @@ export default function HomeScreen() {
                       style={{ backgroundColor: 'rgba(10, 22, 40, 0.85)' }}
                     >
                       <ActivityIndicator size="large" color="#22d3ee" />
-                      <Text className="text-cyan-400 text-lg font-semibold mt-3">
-                        Analyzing your photo...
+                      <Text className="text-cyan-400 text-lg font-semibold mt-3 text-center px-6">
+                        Making sure it's a legit fish photo 🧐
                       </Text>
                     </View>
                   )}
 
                   {/* No fish detected warning overlay */}
-                  {noFishDetected && !isValidatingImage && !resizeFishMutation.isPending && (
+                  {noFishDetected && !isValidatingImage && !isResizing && (
                     <View
                       className="absolute inset-0 items-center justify-center px-6"
                       style={{ backgroundColor: 'rgba(10, 22, 40, 0.92)' }}
@@ -952,17 +1002,21 @@ export default function HomeScreen() {
                     </View>
                   )}
 
-                  {resizeFishMutation.isPending && (
+                  {isResizing && (
                     <View
-                      className="absolute inset-0 items-center justify-center"
-                      style={{ backgroundColor: 'rgba(10, 22, 40, 0.95)' }}
+                      className="absolute inset-0 items-center justify-center px-2"
+                      style={{ backgroundColor: 'rgba(10, 22, 40, 0.96)' }}
                     >
-                      <Text className="text-cyan-400 text-2xl font-bold mb-2">
-                        Resizing your fish...
+                      <Text className="text-cyan-400 text-xl font-bold">
+                        Resizing your fish…
                       </Text>
-                      <Text className="text-slate-300 text-base mb-6">
-                        This takes about 30 seconds
+                      <Text className="text-slate-400 text-xs mb-3">
+                        usually about 10–15 seconds
                       </Text>
+                      {/* Labor-illusion status + progress bar above the game: names the
+                          work and shows forward motion so the wait reads as valuable,
+                          not broken. */}
+                      <ResizeStatus species={detectedSpecies} />
                       <FishTapGame key={gameKey} />
                     </View>
                   )}
@@ -1029,7 +1083,7 @@ export default function HomeScreen() {
                       </Animated.View>
                       <View className="mt-2">
                         <Text className="text-center text-red-400 text-sm">
-                          You've used all 3 free resizes
+                          You've used your free resize
                         </Text>
                       </View>
                     </View>
@@ -1037,7 +1091,7 @@ export default function HomeScreen() {
                     // Has free resizes - show normal button
                     <Pressable
                       onPress={handleResize}
-                      disabled={resizeFishMutation.isPending || fishScale === 1.0}
+                      disabled={isResizing || fishScale === 1.0}
                       className={cn(
                         'rounded-xl overflow-hidden active:scale-[0.98]',
                         fishScale === 1.0 && 'opacity-50'
@@ -1052,7 +1106,7 @@ export default function HomeScreen() {
                         <View className="flex-row items-center justify-center">
                           <Wand2 size={20} color="white" />
                           <Text className="text-white text-lg font-bold ml-2">
-                            {resizeFishMutation.isPending ? 'Resizing...' : 'Make It Happen'}
+                            {isResizing ? 'Resizing…' : 'Make It Happen'}
                           </Text>
                         </View>
                       </LinearGradient>
@@ -1063,11 +1117,13 @@ export default function HomeScreen() {
                 {/* Free edits counter - only show when not already edited */}
                 {!isPremium && !editedImage && freeEditsRemaining > 0 && (
                   <View className="mt-1.5">
-                    {freeEditsRemaining > 1 ? (
+                    {fishScale === 1.0 ? (
                       <Text className="text-center text-slate-400 text-xs">
-                        {fishScale === 1.0
-                          ? 'Adjust the fish size to resize'
-                          : `${freeEditsRemaining} free resizes remaining`}
+                        Adjust the fish size to resize
+                      </Text>
+                    ) : freeEditsRemaining > 1 ? (
+                      <Text className="text-center text-slate-400 text-xs">
+                        {`${freeEditsRemaining} free resizes remaining`}
                       </Text>
                     ) : (
                       /* Last free resize indicator - simple View to avoid touch conflicts */
@@ -1130,7 +1186,7 @@ export default function HomeScreen() {
                 )}
 
                 {/* Error message */}
-                {resizeFishMutation.isError && (
+                {resizeFishMutation.isError && !isResizing && (
                   <View className="bg-red-900/30 rounded-xl p-3 mt-2">
                     <View className="flex-row items-center justify-center mb-2">
                       <AlertCircle size={16} color="#ef4444" />
@@ -1338,7 +1394,6 @@ export default function HomeScreen() {
           <ShareableImage
             ref={shareableImageRef}
             imageUri={editedImage}
-            scale={fishScale}
             isPremium={isPremium || currentImageUnlocked}
           />
         </View>

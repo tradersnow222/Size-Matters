@@ -717,7 +717,7 @@ export default function ProfileScreen() {
                   lineHeight: 22,
                 }}
               >
-                This will delete all your photos, stats, and progress. Your 3 free resizes will be restored. This cannot be undone.
+                This will delete all your photos, stats, and progress. Your free resize will be restored. This cannot be undone.
               </Text>
             </View>
 

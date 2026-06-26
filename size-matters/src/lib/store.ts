@@ -56,8 +56,15 @@ interface AppState {
   // Persistence
   loadFromStorage: () => Promise<void>;
   saveToStorage: () => Promise<void>;
+  scheduleSave: () => void;
   resetAllData: () => Promise<void>;
 }
+
+// Debounce persistence: mutations fire `scheduleSave()` (often several in one
+// tick), and the actual JSON.stringify + AsyncStorage write happens once, shortly
+// after the last change — instead of stringifying the whole photo list per call.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const SAVE_DEBOUNCE_MS = 400;
 
 export const useAppStore = create<AppState>((set, get) => ({
   photos: [],
@@ -65,7 +72,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   totalShares: 0,
   profilePhotoUri: null,
   isPremium: false,
-  freeEditsRemaining: 3,
+  freeEditsRemaining: 1,
   hasSeenOnboarding: false,
   hasUsedSizeButtons: false,
   hasRatedApp: false,
@@ -74,17 +81,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setHasRatedApp: (value) => {
     set({ hasRatedApp: value });
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   setHasProvidedFeedback: (value) => {
     set({ hasProvidedFeedback: value });
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   setLastFeedbackPromptTime: (time) => {
     set({ lastFeedbackPromptTime: time });
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   shouldShowReviewPrompt: () => {
@@ -103,61 +110,61 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setHasSeenOnboarding: (value) => {
     set({ hasSeenOnboarding: value });
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   setHasUsedSizeButtons: (value) => {
     set({ hasUsedSizeButtons: value });
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   setProfilePhoto: (uri) => {
     set({ profilePhotoUri: uri });
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   addPhoto: (photo) => {
     set((state) => ({ photos: [photo, ...state.photos] }));
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   updatePhoto: (id, updates) => {
     set((state) => ({
       photos: state.photos.map((p) => (p.id === id ? { ...p, ...updates } : p)),
     }));
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   deletePhoto: (id) => {
     set((state) => ({ photos: state.photos.filter((p) => p.id !== id) }));
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   unlockPhoto: (id) => {
     set((state) => ({
       photos: state.photos.map((p) => (p.id === id ? { ...p, isUnlocked: true } : p)),
     }));
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   incrementEdits: () => {
     set((state) => ({ totalEdits: state.totalEdits + 1 }));
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   incrementShares: () => {
     set((state) => ({ totalShares: state.totalShares + 1 }));
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   decrementFreeEdits: () => {
     set((state) => ({ freeEditsRemaining: Math.max(0, state.freeEditsRemaining - 1) }));
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   setPremium: (value) => {
     set({ isPremium: value });
-    get().saveToStorage();
+    get().scheduleSave();
   },
 
   loadFromStorage: async () => {
@@ -171,7 +178,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           totalShares: parsed.totalShares || 0,
           profilePhotoUri: parsed.profilePhotoUri || null,
           isPremium: parsed.isPremium || false,
-          freeEditsRemaining: parsed.freeEditsRemaining ?? 3,
+          freeEditsRemaining: parsed.freeEditsRemaining ?? 1,
           hasSeenOnboarding: parsed.hasSeenOnboarding || false,
           hasUsedSizeButtons: parsed.hasUsedSizeButtons || false,
           hasRatedApp: parsed.hasRatedApp || false,
@@ -208,8 +215,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  scheduleSave: () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      get().saveToStorage();
+    }, SAVE_DEBOUNCE_MS);
+  },
+
   resetAllData: async () => {
     try {
+      // Cancel any pending debounced write so it can't resurrect stale data.
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
       await AsyncStorage.removeItem('size-matters-data');
       set({
         photos: [],
@@ -217,7 +237,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         totalShares: 0,
         profilePhotoUri: null,
         isPremium: false,
-        freeEditsRemaining: 3,
+        freeEditsRemaining: 1,
         hasSeenOnboarding: false,
         hasUsedSizeButtons: false,
         hasRatedApp: false,

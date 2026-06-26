@@ -11,8 +11,6 @@ export const SHARE_MESSAGES = [
   "Official fish size verification",
 ];
 
-export const APP_DOWNLOAD_LINK = "sizematters.app/download";
-
 export function getRandomShareMessage(): string {
   return SHARE_MESSAGES[Math.floor(Math.random() * SHARE_MESSAGES.length)];
 }

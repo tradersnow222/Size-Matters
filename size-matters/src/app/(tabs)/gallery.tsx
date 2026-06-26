@@ -3,7 +3,6 @@ import {
   View,
   Text,
   ScrollView,
-  Image,
   Pressable,
   Dimensions,
   ActivityIndicator,
@@ -11,6 +10,9 @@ import {
   StatusBar,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
+// RN's Image is kept only for its static getSize() (expo-image has no equivalent).
+import { Image as RNImage } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
@@ -96,7 +98,7 @@ function ImageViewer({
   useEffect(() => {
     if (photo) {
       const uri = photo.editedUri || photo.originalUri;
-      Image.getSize(
+      RNImage.getSize(
         uri,
         (width, height) => {
           setImageDimensions({ width, height });
@@ -261,7 +263,7 @@ function ImageViewer({
                       width: SCREEN_WIDTH,
                       height: SCREEN_WIDTH * 1.3,
                     }}
-                    resizeMode="contain"
+                    contentFit="contain"
                   />
                   {/* Watermark overlay for non-premium users - positioned within actual image bounds */}
                   <WatermarkOverlay
@@ -586,8 +588,10 @@ export default function GalleryScreen() {
           throw new Error('ShareableImage not ready');
         }
 
-        // Request permissions
-        const { status } = await MediaLibrary.requestPermissionsAsync();
+        // Request write-only ("add to library") permission — the app only saves,
+        // never reads the library. Requires NSPhotoLibraryAddUsageDescription
+        // (added via the expo-media-library plugin in app.json).
+        const { status } = await MediaLibrary.requestPermissionsAsync(true);
         if (status !== 'granted') {
           console.log('Permission denied');
           return;
@@ -723,7 +727,7 @@ export default function GalleryScreen() {
                       <Image
                         source={{ uri: photo.editedUri || photo.originalUri }}
                         style={{ width: '100%', height: '100%' }}
-                        resizeMode="cover"
+                        contentFit="cover"
                       />
                       {/* Watermark overlay for non-premium users */}
                       <ThumbnailWatermark
@@ -806,7 +810,6 @@ export default function GalleryScreen() {
           <ShareableImage
             ref={shareableImageRef}
             imageUri={currentSharePhoto.editedUri}
-            scale={currentSharePhoto.fishScale}
             isPremium={isPremium || currentSharePhoto.isUnlocked}
           />
         </View>
