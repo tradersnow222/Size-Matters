@@ -1,5 +1,6 @@
 import { Platform, Linking } from 'react-native';
 import * as MailComposer from 'expo-mail-composer';
+import * as StoreReview from 'expo-store-review';
 
 /**
  * App-wide configuration and external delivery helpers.
@@ -7,6 +8,16 @@ import * as MailComposer from 'expo-mail-composer';
 
 // Support inbox used for all feedback channels.
 export const SUPPORT_EMAIL = 'info@sizematters.app';
+
+/**
+ * Legal pages. Apple requires a working Privacy Policy URL (and an EULA/Terms
+ * link on the subscription screen). Defined once here so the paywall, the
+ * Premium tab, and the Profile screen all point at the same place.
+ * ⚠️ These must resolve to live pages before submitting — verify the domain is
+ * actually serving them (it has been parked).
+ */
+export const PRIVACY_URL = 'https://sizematters.app/privacy';
+export const TERMS_URL = 'https://sizematters.app/terms';
 
 /**
  * The numeric App Store ID for Size Matters.
@@ -24,6 +35,33 @@ export function getAppStoreReviewUrl(): string | null {
     return `https://apps.apple.com/app/id${APP_STORE_ID}?action=write-review`;
   }
   return null;
+}
+
+/**
+ * Ask the user to rate the app. Prefers Apple's NATIVE in-app review sheet
+ * (StoreReview.requestReview) — required by App Store guideline 1.1.7; a custom
+ * dialog that deep-links straight to the write-review page is not allowed and
+ * is throttled to nothing. Falls back to opening the App Store write-review
+ * page only when the native API is unavailable (older OS, etc).
+ */
+export async function requestAppReview(): Promise<void> {
+  try {
+    if (await StoreReview.isAvailableAsync()) {
+      await StoreReview.requestReview();
+      return;
+    }
+  } catch (error) {
+    console.log('Native review prompt unavailable, falling back:', error);
+  }
+
+  const reviewUrl = getAppStoreReviewUrl();
+  if (reviewUrl) {
+    try {
+      await Linking.openURL(reviewUrl);
+    } catch (error) {
+      console.log('Could not open App Store review page:', error);
+    }
+  }
 }
 
 /**

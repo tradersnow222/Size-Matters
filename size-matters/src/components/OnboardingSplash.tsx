@@ -37,6 +37,11 @@ const STEPS = [
     emoji: "🐋",
   },
   {
+    title: "Here's the magic",
+    subtitle: "Upload a catch photo — AI resizes the fish in seconds (needs internet)",
+    emoji: "📸",
+  },
+  {
     title: "Size Matters",
     subtitle: "Make Your Catch Legendary",
     emoji: "🏆",
@@ -141,7 +146,7 @@ export function OnboardingSplash({ onComplete }: OnboardingSplashProps) {
         withSpring(1.5, { damping: 5, stiffness: 80 })
       );
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    } else if (currentStep === 2) {
+    } else if (currentStep === STEPS.length - 1) {
       fishScale.value = withSpring(1.2, { damping: 8 });
       // Start subtle pulse animation for CTA button
       buttonScale.value = withDelay(

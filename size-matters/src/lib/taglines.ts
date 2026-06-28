@@ -43,13 +43,6 @@ export const taglines = {
     "Don't Be Shy, Show Us Your Catch",
     "The Fish Aren't Gonna Upload Themselves",
   ],
-  loading: [
-    "Scaling your fish...",
-    "Adjusting the truth...",
-    "Making magic happen...",
-    "Enhancing your story...",
-    "Growing your catch...",
-  ],
 };
 
 export const getRandomTagline = (category: keyof typeof taglines): string => {
@@ -72,14 +65,6 @@ export const getSliderTagline = (scale: number): string => {
   // Fallback for any value between presets
   return getRandomFromArray(taglines.slider.original);
 };
-
-export const fishingFacts = [
-  "The largest fish ever caught was a 2,664 lb Great White Shark",
-  "Bass can see in almost all directions at once",
-  "Fish have been on Earth for over 500 million years",
-  "The oldest known fish was a Koi that lived 226 years",
-  "Tuna can swim up to 43 miles per hour",
-];
 
 export const funnyTitles = [
   "The Beast",

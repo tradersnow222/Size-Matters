@@ -1,6 +1,6 @@
 # Size Matters — Project Guide
 
-A mobile app for anglers: upload a catch photo and AI resizes the fish (50%–300%) for bragging rights. Detect with OpenAI vision, resize with FLUX.1 Kontext Pro, monetize with a watermark paywall via RevenueCat.
+A mobile app for anglers: upload a catch photo and AI resizes the fish (50%–300%) for bragging rights. Detect + resize with Google Gemini (detection: `gemini-2.5-flash`; resize: "Nano Banana" `gemini-3.1-flash-image`, with FLUX.1 Kontext Pro kept as a fallback behind `RESIZE_PROVIDER`), monetize with a watermark paywall via RevenueCat.
 
 **Status: migrated off the Vibecode no-code platform.** Builds and App Store releases are now owned via EAS Build under the developer's own Apple account. Do NOT reintroduce any of: `@vibecodeapp/*` packages, `withVibecodeMetro`, `EXPO_PUBLIC_VIBECODE_*` env vars, or the Vibecode React Native patches.
 
@@ -38,7 +38,7 @@ Local dev: put them in `.env` (gitignored — see `.env.example`). Builds: set t
 - Builds & submissions go through EAS: `eas build` / `eas submit` (configured in `eas.json`).
 - **Before the FIRST build, verify:**
   1. `ios.bundleIdentifier` is `com.vibecode.reelsize.o65mr2` — the **immutable** bundle ID of the live App Store listing (id `6757819997`) under your Apple account. Do NOT change it (bundle IDs can't be changed on an existing app); it must stay exactly this or updates won't reach the existing listing. The "vibecode" in the string is just the original auto-generated identifier — not a functional dependency.
-  2. Real OpenAI + Flux keys are present in the EAS environment (the local `.env` may carry placeholders).
+  2. Real Gemini + Flux keys are present in the EAS environment (the local `.env` may carry placeholders). OpenAI is no longer used.
   3. Bump `ios.buildNumber` every build, and `version` for each new App Store version.
 
 ## Conventions

@@ -48,7 +48,6 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "Size Matters saves your resized catch photos to your photo library.",
           "savePhotosPermission": "Size Matters saves your resized catch photos to your photo library.",
           "isAccessMediaLocationEnabled": false
         }

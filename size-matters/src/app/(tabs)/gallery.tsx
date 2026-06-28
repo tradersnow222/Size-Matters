@@ -34,6 +34,7 @@ import Animated, {
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Fish, Share2, Trash2, ImageOff, Sparkles, X, Download, UserCircle } from 'lucide-react-native';
 import { useAppStore, FishPhoto } from '@/lib/store';
+import { persistImage } from '@/lib/fileStore';
 import { ShareableImage, ShareableImageRef } from '@/components/ShareableImage';
 import { WatermarkOverlay, ThumbnailWatermark } from '@/components/WatermarkOverlay';
 import { PaywallModal } from '@/components/PaywallModal';
@@ -93,11 +94,14 @@ function ImageViewer({
 
   // Track actual image dimensions for proper watermark positioning
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
+  // Whether the underlying file is missing (e.g. an old cache-dir URI was purged).
+  const [imgBroken, setImgBroken] = useState(false);
 
   // Fetch image dimensions when photo changes
   useEffect(() => {
     if (photo) {
       const uri = photo.editedUri || photo.originalUri;
+      setImgBroken(false);
       RNImage.getSize(
         uri,
         (width, height) => {
@@ -257,14 +261,22 @@ function ImageViewer({
             <GestureDetector gesture={composedGesture}>
               <Animated.View style={animatedImageStyle}>
                 <View style={{ overflow: 'hidden' }}>
-                  <Image
-                    source={{ uri: photo.editedUri || photo.originalUri }}
-                    style={{
-                      width: SCREEN_WIDTH,
-                      height: SCREEN_WIDTH * 1.3,
-                    }}
-                    contentFit="contain"
-                  />
+                  {imgBroken ? (
+                    <View style={{ width: SCREEN_WIDTH, height: SCREEN_WIDTH * 1.3, alignItems: 'center', justifyContent: 'center' }}>
+                      <ImageOff size={48} color={colors.text.tertiary} />
+                      <Text style={{ color: colors.text.tertiary, marginTop: 10 }}>Photo unavailable</Text>
+                    </View>
+                  ) : (
+                    <Image
+                      source={{ uri: photo.editedUri || photo.originalUri }}
+                      style={{
+                        width: SCREEN_WIDTH,
+                        height: SCREEN_WIDTH * 1.3,
+                      }}
+                      contentFit="contain"
+                      onError={() => setImgBroken(true)}
+                    />
+                  )}
                   {/* Watermark overlay for non-premium users - positioned within actual image bounds */}
                   <WatermarkOverlay
                     width={SCREEN_WIDTH}
@@ -453,6 +465,8 @@ export default function GalleryScreen() {
   const [showWatermarkConfirm, setShowWatermarkConfirm] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
   const [pendingSharePhoto, setPendingSharePhoto] = useState<FishPhoto | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<FishPhoto | null>(null);
+  const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set());
   const shareableImageRef = useRef<ShareableImageRef>(null);
 
   useEffect(() => {
@@ -565,13 +579,23 @@ export default function GalleryScreen() {
 
   const handleDelete = (photo: FishPhoto) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    deletePhoto(photo.id);
+    setPendingDelete(photo);
   };
 
-  const handleSetAsProfilePhoto = (photo: FishPhoto) => {
+  const confirmDelete = () => {
+    if (pendingDelete) {
+      deletePhoto(pendingDelete.id);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    setPendingDelete(null);
+  };
+
+  const handleSetAsProfilePhoto = async (photo: FishPhoto) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const imageUri = photo.editedUri || photo.originalUri;
-    setProfilePhoto(imageUri);
+    // Copy out of cache so the avatar survives app updates / cache purges.
+    const persisted = await persistImage(imageUri, 'profile');
+    setProfilePhoto(persisted ?? imageUri);
     handleCloseViewer();
   };
 
@@ -724,11 +748,23 @@ export default function GalleryScreen() {
                   >
                     {/* Image */}
                     <View style={{ height: CARD_WIDTH * 1.2 }}>
-                      <Image
-                        source={{ uri: photo.editedUri || photo.originalUri }}
-                        style={{ width: '100%', height: '100%' }}
-                        contentFit="cover"
-                      />
+                      {brokenIds.has(photo.id) ? (
+                        <View style={{ width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background.tertiary }}>
+                          <ImageOff size={30} color={colors.text.tertiary} />
+                          <Text style={{ fontSize: 11, color: colors.text.tertiary, marginTop: 6 }}>Photo unavailable</Text>
+                        </View>
+                      ) : (
+                        <Image
+                          source={{ uri: photo.editedUri || photo.originalUri }}
+                          style={{ width: '100%', height: '100%' }}
+                          contentFit="cover"
+                          onError={() => setBrokenIds((prev) => {
+                            const next = new Set(prev);
+                            next.add(photo.id);
+                            return next;
+                          })}
+                        />
+                      )}
                       {/* Watermark overlay for non-premium users */}
                       <ThumbnailWatermark
                         width={CARD_WIDTH}
@@ -814,6 +850,34 @@ export default function GalleryScreen() {
           />
         </View>
       )}
+
+      {/* Delete confirmation */}
+      <Modal
+        visible={!!pendingDelete}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPendingDelete(null)}
+      >
+        <View className="flex-1 bg-black/70 items-center justify-center px-6">
+          <View className="bg-[#0B1623] rounded-2xl p-6 w-full max-w-sm border border-slate-700">
+            <View className="items-center mb-4">
+              <View className="w-14 h-14 rounded-full items-center justify-center" style={{ backgroundColor: `${colors.semantic.error}20` }}>
+                <Trash2 size={26} color={colors.semantic.error} />
+              </View>
+            </View>
+            <Text className="text-white text-xl font-bold text-center mb-1">Delete this catch?</Text>
+            <Text className="text-slate-400 text-center text-sm mb-6">This can&apos;t be undone.</Text>
+            <View className="gap-3">
+              <Pressable onPress={confirmDelete} className="rounded-xl py-3.5 active:scale-[0.98]" style={{ backgroundColor: colors.semantic.error }}>
+                <Text className="text-white text-center text-base font-bold">Delete</Text>
+              </Pressable>
+              <Pressable onPress={() => setPendingDelete(null)} className="rounded-xl py-3.5 active:scale-[0.98] bg-slate-700/50">
+                <Text className="text-slate-200 text-center text-base font-semibold">Keep</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Full screen image viewer */}
       <ImageViewer

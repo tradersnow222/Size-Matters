@@ -1,28 +1,34 @@
-import React, { useRef, useImperativeHandle, forwardRef, useCallback } from 'react';
-import { View, Text, Dimensions, StyleSheet } from 'react-native';
+import React, { useRef, useImperativeHandle, forwardRef, useCallback, useEffect, useState } from 'react';
+import { View, Text, Dimensions, StyleSheet, Image as RNImage } from 'react-native';
 import { Image } from 'expo-image';
 import { captureRef } from 'react-native-view-shot';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IMAGE_SIZE = SCREEN_WIDTH - 48;
+// Base width in points. The component is mounted off-screen and captured at the
+// device pixel scale (~2–3x), so the exported PNG is ~800–1170px wide.
+const BASE_WIDTH = SCREEN_WIDTH - 48;
+// Until the real image is measured, assume a typical portrait catch photo so a
+// capture that races the measurement still isn't square-cropped.
+const DEFAULT_ASPECT = 3 / 4;
 
 // Watermark configuration
 const WATERMARK_TEXT = 'sizematters.app';
-const WATERMARK_ROWS = 4;
 const WATERMARK_COLS = 3;
 
-// Generate watermark positions
 interface WatermarkPosition {
   x: number;
   y: number;
 }
 
-const generateWatermarkPositions = (size: number): WatermarkPosition[] => {
+// Tile the watermark across the (now aspect-correct) image. Density is anchored to
+// the width so it matches the in-app preview, and rows extend to cover any height.
+const generateWatermarkPositions = (width: number, height: number): WatermarkPosition[] => {
   const positions: WatermarkPosition[] = [];
-  const spacingY = size / 3;
-  const spacingX = size / WATERMARK_COLS;
+  const spacingX = width / WATERMARK_COLS;
+  const spacingY = width / 3;
+  const rows = Math.ceil(height / spacingY) + 1;
 
-  for (let row = 0; row < WATERMARK_ROWS; row++) {
+  for (let row = 0; row < rows; row++) {
     for (let col = 0; col < WATERMARK_COLS; col++) {
       const offsetX = row % 2 === 0 ? 0 : spacingX * 0.5;
       positions.push({
@@ -33,8 +39,6 @@ const generateWatermarkPositions = (size: number): WatermarkPosition[] => {
   }
   return positions;
 };
-
-const WATERMARK_POSITIONS = generateWatermarkPositions(IMAGE_SIZE);
 
 export interface ShareableImageRef {
   capture: () => Promise<string>;
@@ -48,6 +52,28 @@ interface ShareableImageProps {
 export const ShareableImage = React.memo(forwardRef<ShareableImageRef, ShareableImageProps>(
   ({ imageUri, isPremium = false }, ref) => {
     const viewRef = useRef<View>(null);
+    // Keep the export in the photo's real aspect ratio instead of force-cropping it
+    // to a square (which lopped the fish or the angler's face off the shared image).
+    const [aspect, setAspect] = useState(DEFAULT_ASPECT);
+
+    useEffect(() => {
+      let active = true;
+      RNImage.getSize(
+        imageUri,
+        (w, h) => {
+          if (active && w > 0 && h > 0) setAspect(w / h);
+        },
+        () => {
+          /* keep the default portrait aspect on failure */
+        },
+      );
+      return () => {
+        active = false;
+      };
+    }, [imageUri]);
+
+    const width = BASE_WIDTH;
+    const height = Math.round(BASE_WIDTH / aspect);
 
     const capture = useCallback(async () => {
       if (!viewRef.current) {
@@ -65,28 +91,29 @@ export const ShareableImage = React.memo(forwardRef<ShareableImageRef, Shareable
       });
 
       return uri;
-    }, [isPremium]);
+    }, []);
 
     useImperativeHandle(ref, () => ({ capture }), [capture]);
+
+    const positions = generateWatermarkPositions(width, height);
 
     return (
       <View
         ref={viewRef}
-        style={styles.container}
+        style={{ width, height, backgroundColor: '#0a1628' }}
         collapsable={false}
       >
-        {/* Base image */}
+        {/* Base image — aspect-correct, so nothing is cropped out */}
         <Image
           source={{ uri: imageUri }}
-          style={styles.image}
+          style={{ width, height }}
           contentFit="cover"
         />
 
         {/* Watermarks - only for non-premium users */}
         {!isPremium && (
-          <View style={styles.watermarkContainer} pointerEvents="none">
-            {/* Scattered diagonal watermarks */}
-            {WATERMARK_POSITIONS.map((pos, index) => (
+          <View style={[StyleSheet.absoluteFill, { overflow: 'hidden' }]} pointerEvents="none">
+            {positions.map((pos, index) => (
               <View
                 key={index}
                 style={[
@@ -108,21 +135,6 @@ export const ShareableImage = React.memo(forwardRef<ShareableImageRef, Shareable
 ));
 
 const styles = StyleSheet.create({
-  container: {
-    width: IMAGE_SIZE,
-    height: IMAGE_SIZE,
-    backgroundColor: '#0a1628',
-  },
-  image: {
-    width: IMAGE_SIZE,
-    height: IMAGE_SIZE,
-  },
-  watermarkContainer: {
-    position: 'absolute',
-    width: IMAGE_SIZE,
-    height: IMAGE_SIZE,
-    overflow: 'hidden',
-  },
   watermarkWrapper: {
     position: 'absolute',
     transform: [{ rotate: '-30deg' }],

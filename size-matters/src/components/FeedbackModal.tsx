@@ -8,14 +8,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Linking,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, SlideInUp } from 'react-native-reanimated';
 import { X, Send } from 'lucide-react-native';
 import { colors, spacing } from '@/lib/design';
 import { useAppStore } from '@/lib/store';
-import { getAppStoreReviewUrl, sendFeedbackEmail } from '@/lib/appConfig';
+import { requestAppReview, sendFeedbackEmail } from '@/lib/appConfig';
 
 interface FeedbackModalProps {
   visible: boolean;
@@ -48,17 +47,9 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
     setHasRatedApp(true);
     setLastFeedbackPromptTime(Date.now());
 
-    // Open the App Store review page once the App Store ID has been configured
-    // (see APP_STORE_ID in lib/appConfig). Until the app is published there is
-    // no ID, so we thank the user rather than open a broken page.
-    const reviewUrl = getAppStoreReviewUrl();
-    if (reviewUrl) {
-      try {
-        await Linking.openURL(reviewUrl);
-      } catch (error) {
-        console.log('Could not open App Store:', error);
-      }
-    }
+    // Apple's NATIVE in-app review sheet (guideline-compliant), with a
+    // write-review deep-link fallback handled inside requestAppReview().
+    await requestAppReview();
 
     setStep('submitted');
     setTimeout(() => {

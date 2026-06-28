@@ -106,6 +106,33 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
 }
 
 /**
+ * fetchWithTimeout that retries a couple of times on transient failures (rate
+ * limits + gateway errors) with a short backoff. A single 429/503 on a paid
+ * image model is common under burst; without a retry that becomes one visible
+ * failure for a paying user. Timeouts/aborts are NOT retried (they already cost
+ * the full ceiling), and non-retryable statuses return immediately.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+  retries: number = 1,
+): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetchWithTimeout(url, options, timeoutMs);
+    const retryable =
+      response.status === 429 ||
+      response.status === 502 ||
+      response.status === 503 ||
+      response.status === 504;
+    if (response.ok || !retryable || attempt >= retries) {
+      return response;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+  }
+}
+
+/**
  * True only for a key that could plausibly be real. Catches the #1 build/migration
  * failure: shipping with a missing key or an `sk-proj-xxxx` / `bfl_xxxx` placeholder
  * from .env.example. (An otherwise-real-looking but revoked key is still caught at
@@ -399,7 +426,7 @@ async function resizeFishWithGemini(
     const prompt = generateResizePrompt(scale, species);
     const aspectRatio = await getImageAspectRatioLabel(imageUri);
 
-    const response = await fetchWithTimeout(`${GEMINI_API_BASE}/models/${GEMINI_IMAGE_MODEL}:generateContent`, {
+    const response = await fetchWithRetry(`${GEMINI_API_BASE}/models/${GEMINI_IMAGE_MODEL}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -493,13 +520,13 @@ async function resizeFishWithGemini(
  */
 async function pollFluxResult(pollingUrl: string, maxAttempts: number = 60): Promise<FluxPollResponse> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const response = await fetch(pollingUrl, {
+    const response = await fetchWithTimeout(pollingUrl, {
       method: 'GET',
       headers: {
         // Resize already validated the key before polling begins.
         'x-key': FLUX_API_KEY ?? '',
       },
-    });
+    }, 10000);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -577,7 +604,7 @@ async function resizeFishWithFlux(
     const prompt = generateResizePrompt(scale, species);
 
     // Make initial request to Flux Kontext API
-    const response = await fetch(FLUX_API_URL, {
+    const response = await fetchWithTimeout(FLUX_API_URL, {
       method: 'POST',
       headers: {
         'x-key': FLUX_API_KEY,
@@ -586,10 +613,12 @@ async function resizeFishWithFlux(
       body: JSON.stringify({
         prompt: prompt,
         input_image: `data:image/jpeg;base64,${base64}`,
-        safety_tolerance: 6, // Most permissive for fishing photos
+        // BFL caps safety_tolerance at 2 when an output image is requested (6 is
+        // rejected with HTTP 422). 2 is the most permissive value this accepts.
+        safety_tolerance: 2,
         output_format: 'png',
       }),
-    });
+    }, RESIZE_TIMEOUT_MS);
 
     if (!response.ok) {
       const errorText = await response.text();
