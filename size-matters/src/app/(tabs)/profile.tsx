@@ -30,12 +30,14 @@ import {
   Camera,
   MessageSquare,
   Heart,
+  Star,
   RotateCcw,
   AlertTriangle,
 } from 'lucide-react-native';
 import { useAppStore } from '@/lib/store';
+import { persistImage } from '@/lib/fileStore';
 import { colors, spacing, touchTargets, gradients } from '@/lib/design';
-import { sendFeedbackEmail } from '@/lib/appConfig';
+import { sendFeedbackEmail, requestAppReview, PRIVACY_URL, TERMS_URL } from '@/lib/appConfig';
 
 const ACHIEVEMENTS = [
   {
@@ -129,7 +131,9 @@ export default function ProfileScreen() {
 
     if (!result.canceled && result.assets[0]) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setProfilePhoto(result.assets[0].uri);
+      // Copy out of the picker's temp/cache dir so the avatar persists.
+      const persisted = await persistImage(result.assets[0].uri, 'profile');
+      setProfilePhoto(persisted ?? result.assets[0].uri);
     }
   };
 
@@ -152,10 +156,12 @@ export default function ProfileScreen() {
 
   const unlockedCount = ACHIEVEMENTS.filter(isAchievementUnlocked).length;
 
-  // Calculate average fish scale
-  const avgScale = photos.length > 0
-    ? photos.reduce((sum, p) => sum + p.fishScale, 0) / photos.length
-    : 1;
+  // Average enlargement across catches that were actually enlarged. Mixing in
+  // shrinks/originals would make this number meaningless; null = nothing yet.
+  const enlargedPhotos = photos.filter((p) => p.fishScale > 1);
+  const avgScale = enlargedPhotos.length > 0
+    ? enlargedPhotos.reduce((sum, p) => sum + p.fishScale, 0) / enlargedPhotos.length
+    : null;
 
   return (
     <View className="flex-1" style={{ backgroundColor: colors.background.primary }}>
@@ -291,10 +297,10 @@ export default function ProfileScreen() {
               >
                 <View className="flex-row items-center">
                   <Target size={20} color={colors.accent.gold} />
-                  <Text style={{ fontSize: 13, color: colors.text.secondary, marginLeft: 8 }}>Avg Scale</Text>
+                  <Text style={{ fontSize: 13, color: colors.text.secondary, marginLeft: 8 }}>Avg Boost</Text>
                 </View>
                 <Text style={{ fontSize: 32, fontWeight: '700', color: colors.text.primary, marginTop: 8 }}>
-                  {avgScale.toFixed(1)}x
+                  {avgScale ? `${avgScale.toFixed(1)}x` : '—'}
                 </Text>
               </View>
               <View
@@ -557,6 +563,32 @@ export default function ProfileScreen() {
                 </View>
                 <ExternalLink size={18} color={colors.text.tertiary} />
               </Pressable>
+
+              {/* Rate on the App Store — fires Apple's native in-app review sheet */}
+              <View style={{ height: 1, backgroundColor: `${colors.background.secondary}50` }} />
+              <Pressable
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  requestAppReview();
+                }}
+                className="flex-row items-center p-4 active:opacity-70"
+              >
+                <View
+                  className="w-10 h-10 rounded-full items-center justify-center"
+                  style={{ backgroundColor: `${colors.accent.gold}20` }}
+                >
+                  <Star size={20} color={colors.accent.gold} />
+                </View>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={{ fontSize: 17, color: colors.text.primary }}>
+                    Rate Size Matters
+                  </Text>
+                  <Text style={{ fontSize: 13, color: colors.text.tertiary }}>
+                    Love it? Leave a quick rating
+                  </Text>
+                </View>
+                <ExternalLink size={18} color={colors.text.tertiary} />
+              </Pressable>
             </View>
           </Animated.View>
 
@@ -574,7 +606,7 @@ export default function ProfileScreen() {
               }}
             >
               <Pressable
-                onPress={() => Linking.openURL('https://sizematters.app/terms-of-use/')}
+                onPress={() => Linking.openURL(TERMS_URL)}
                 className="flex-row items-center p-4 active:opacity-70"
                 style={{
                   borderBottomWidth: 1,
@@ -594,7 +626,7 @@ export default function ProfileScreen() {
               </Pressable>
 
               <Pressable
-                onPress={() => Linking.openURL('https://sizematters.app/privacy-policy/')}
+                onPress={() => Linking.openURL(PRIVACY_URL)}
                 className="flex-row items-center p-4 active:opacity-70"
                 style={{
                   borderBottomWidth: 1,

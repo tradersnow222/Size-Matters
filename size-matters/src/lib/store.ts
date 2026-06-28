@@ -66,13 +66,17 @@ interface AppState {
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 const SAVE_DEBOUNCE_MS = 400;
 
+// Free AI resizes a new user gets before the paywall. Keep the App Store listing
+// description in sync with this number (currently 1).
+export const DEFAULT_FREE_EDITS = 1;
+
 export const useAppStore = create<AppState>((set, get) => ({
   photos: [],
   totalEdits: 0,
   totalShares: 0,
   profilePhotoUri: null,
   isPremium: false,
-  freeEditsRemaining: 1,
+  freeEditsRemaining: DEFAULT_FREE_EDITS,
   hasSeenOnboarding: false,
   hasUsedSizeButtons: false,
   hasRatedApp: false,
@@ -178,7 +182,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           totalShares: parsed.totalShares || 0,
           profilePhotoUri: parsed.profilePhotoUri || null,
           isPremium: parsed.isPremium || false,
-          freeEditsRemaining: parsed.freeEditsRemaining ?? 1,
+          freeEditsRemaining: parsed.freeEditsRemaining ?? DEFAULT_FREE_EDITS,
           hasSeenOnboarding: parsed.hasSeenOnboarding || false,
           hasUsedSizeButtons: parsed.hasUsedSizeButtons || false,
           hasRatedApp: parsed.hasRatedApp || false,
@@ -237,7 +241,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         totalShares: 0,
         profilePhotoUri: null,
         isPremium: false,
-        freeEditsRemaining: 1,
+        freeEditsRemaining: DEFAULT_FREE_EDITS,
         hasSeenOnboarding: false,
         hasUsedSizeButtons: false,
         hasRatedApp: false,

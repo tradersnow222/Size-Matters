@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { View, Dimensions, StyleSheet } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { View, Pressable, Dimensions, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
   useSharedValue,
@@ -35,6 +35,22 @@ export function ReturningUserSplash({ onComplete }: ReturningUserSplashProps) {
   const bubble1Progress = useSharedValue(0);
   const bubble2Progress = useSharedValue(0);
   const bubble3Progress = useSharedValue(0);
+
+  // Allow tapping to skip, and guard the fade-out so it only runs once.
+  const dismissedRef = useRef(false);
+  const dismiss = () => {
+    if (dismissedRef.current) return;
+    dismissedRef.current = true;
+    fishScale.value = withTiming(1.05, { duration: 200, easing: Easing.out(Easing.ease) });
+    fishOpacity.value = withTiming(0, { duration: 250, easing: Easing.in(Easing.ease) });
+    containerOpacity.value = withTiming(
+      0,
+      { duration: 300, easing: Easing.inOut(Easing.ease) },
+      (finished) => {
+        if (finished) runOnJS(onComplete)();
+      },
+    );
+  };
 
   useEffect(() => {
     // Smooth fade in
@@ -80,25 +96,8 @@ export function ReturningUserSplash({ onComplete }: ReturningUserSplashProps) {
     // Light haptic on appear
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    // After 1.7 seconds, smooth fade out
-    const timeout = setTimeout(() => {
-      fishScale.value = withTiming(1.05, {
-        duration: 300,
-        easing: Easing.out(Easing.ease)
-      });
-      fishOpacity.value = withTiming(0, {
-        duration: 350,
-        easing: Easing.in(Easing.ease)
-      });
-      containerOpacity.value = withTiming(0, {
-        duration: 400,
-        easing: Easing.inOut(Easing.ease)
-      }, (finished) => {
-        if (finished) {
-          runOnJS(onComplete)();
-        }
-      });
-    }, 1700);
+    // Brief welcome — auto-dismiss quickly so it doesn't add latency every launch.
+    const timeout = setTimeout(dismiss, 900);
 
     return () => clearTimeout(timeout);
   }, []);
@@ -203,6 +202,9 @@ export function ReturningUserSplash({ onComplete }: ReturningUserSplashProps) {
           </View>
         </Animated.View>
       </View>
+
+      {/* Tap anywhere to skip the welcome */}
+      <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} />
     </Animated.View>
   );
 }

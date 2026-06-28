@@ -6,8 +6,9 @@ import { useColorScheme } from '@/lib/useColorScheme';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useAppStore } from '@/lib/store';
+import { hasEntitlement } from '@/lib/revenuecatClient';
 import { OnboardingSplash } from '@/components/OnboardingSplash';
 import { ReturningUserSplash } from '@/components/ReturningUserSplash';
 import { OfflineBanner } from '@/components/OfflineBanner';
@@ -86,6 +87,14 @@ export default function RootLayout() {
   useEffect(() => {
     const prepare = async () => {
       await loadFromStorage();
+      // Re-sync premium from RevenueCat (the source of truth) so a lapsed,
+      // restored, or cross-device subscription is reflected instead of trusting
+      // only the cached flag. Non-blocking; only overwrites on a definitive answer.
+      hasEntitlement('premium')
+        .then((res) => {
+          if (res.ok) useAppStore.getState().setPremium(res.data);
+        })
+        .catch(() => {});
       // Check store state after loading
       const storeState = useAppStore.getState();
       if (!storeState.hasSeenOnboarding) {
@@ -109,34 +118,38 @@ export default function RootLayout() {
     setShowReturningSplash(false);
   };
 
-  if (!isReady) {
-    return null;
-  }
-
-  if (showOnboarding) {
-    return (
-      <GestureHandlerRootView style={{ flex: 1 }}>
+  // Build the active screen, then wrap EVERYTHING (onboarding included) in a single
+  // top-level ErrorBoundary + GestureHandlerRootView so a first-launch render error
+  // shows the recovery UI instead of a white screen.
+  let content: ReactNode = null;
+  if (isReady && showOnboarding) {
+    content = (
+      <>
         <StatusBar style="light" />
         <OnboardingSplash onComplete={handleOnboardingComplete} />
-      </GestureHandlerRootView>
+      </>
+    );
+  } else if (isReady) {
+    // Main app with splash overlay on top (so app is pre-mounted for a smooth transition)
+    content = (
+      <QueryClientProvider client={queryClient}>
+        <KeyboardProvider>
+          <StatusBar style={showReturningSplash ? 'light' : (colorScheme === 'dark' ? 'light' : 'dark')} />
+          <RootLayoutNav colorScheme={colorScheme} />
+          <OfflineBanner />
+          {showReturningSplash && (
+            <ReturningUserSplash onComplete={handleReturningSplashComplete} />
+          )}
+        </KeyboardProvider>
+      </QueryClientProvider>
     );
   }
 
-  // Render main app with splash overlay on top (so app is pre-mounted for smooth transition)
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <GestureHandlerRootView style={{ flex: 1 }}>
-          <KeyboardProvider>
-            <StatusBar style={showReturningSplash ? 'light' : (colorScheme === 'dark' ? 'light' : 'dark')} />
-            <RootLayoutNav colorScheme={colorScheme} />
-            <OfflineBanner />
-            {showReturningSplash && (
-              <ReturningUserSplash onComplete={handleReturningSplashComplete} />
-            )}
-          </KeyboardProvider>
-        </GestureHandlerRootView>
-      </QueryClientProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        {content}
+      </GestureHandlerRootView>
     </ErrorBoundary>
   );
 }

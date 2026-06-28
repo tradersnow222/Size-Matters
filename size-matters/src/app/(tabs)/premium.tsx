@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, Pressable, ActivityIndicator, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
@@ -15,9 +15,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import {
   Sparkles,
-  Fish,
   Infinity,
-  Zap,
   Crown,
   Share2,
   Check,
@@ -29,10 +27,11 @@ import { colors, spacing, touchTargets, gradients } from '@/lib/design';
 import {
   getOfferings,
   purchasePackage,
-  hasActiveSubscription,
+  hasEntitlement,
   restorePurchases,
   isRevenueCatEnabled,
 } from '@/lib/revenuecatClient';
+import { PRIVACY_URL, TERMS_URL } from '@/lib/appConfig';
 import type { PurchasesPackage } from 'react-native-purchases';
 
 const FEATURES = [
@@ -53,18 +52,11 @@ const FEATURES = [
   },
 ];
 
-const TESTIMONIALS = [
-  {
-    name: 'BigBass_Bob',
-    text: "Now my 6-inch bluegill looks like a trophy bass. My buddies are FURIOUS.",
-    rating: 5,
-  },
-];
-
 export default function PremiumScreen() {
   const isPremium = useAppStore((s) => s.isPremium);
   const setPremium = useAppStore((s) => s.setPremium);
-  const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'annual'>('weekly');
+  const [selectedPlan, setSelectedPlan] = useState<'annual'>('annual');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Fetch offerings from RevenueCat
   const { data: offeringsResult, isLoading: isLoadingOfferings } = useQuery({
@@ -76,22 +68,19 @@ export default function PremiumScreen() {
   const packages = offerings?.current?.availablePackages ?? [];
 
   // Find specific packages
-  const weeklyPackage = packages.find((p) => p.identifier === '$rc_weekly');
   const annualPackage = packages.find((p) => p.identifier === '$rc_annual');
 
   useEffect(() => {
     useAppStore.getState().loadFromStorage();
   }, []);
 
-  // Check subscription status on mount and sync with RevenueCat
-  // This ensures isPremium is accurate even if the subscription expired
-  // We use hasActiveSubscription instead of hasEntitlement to avoid
-  // false positives from consumable purchases in Test Store
+  // Check subscription status on mount and sync with RevenueCat so isPremium is
+  // accurate even if the subscription expired. The `premium` entitlement is the
+  // single source of truth used everywhere in the app.
   useEffect(() => {
     const checkSubscription = async () => {
-      const result = await hasActiveSubscription();
+      const result = await hasEntitlement('premium');
       if (result.ok) {
-        // Sync local state with actual subscription status
         setPremium(result.data);
       }
     };
@@ -105,18 +94,22 @@ export default function PremiumScreen() {
       if (!result.ok) {
         throw new Error(result.reason);
       }
-      return result;
+      return result.data;
     },
-    onSuccess: async () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const subscriptionResult = await hasActiveSubscription();
-      if (subscriptionResult.ok && subscriptionResult.data) {
+    onSuccess: async (customerInfo) => {
+      const granted = Boolean(customerInfo?.entitlements?.active?.['premium']);
+      if (granted) {
         setPremium(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setErrorMessage("Your purchase went through but didn't unlock yet. Tap Restore Purchases below.");
       }
     },
-    onError: (error) => {
+    onError: (error: unknown) => {
       console.log('Purchase error:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setErrorMessage("That didn't go through — you haven't been charged. Try again or Restore Purchases.");
     },
   });
 
@@ -127,16 +120,22 @@ export default function PremiumScreen() {
       if (!result.ok) {
         throw new Error(result.reason);
       }
-      return result;
+      return result.data;
     },
-    onSuccess: async () => {
-      const subscriptionResult = await hasActiveSubscription();
-      if (subscriptionResult.ok && subscriptionResult.data) {
+    onSuccess: async (customerInfo) => {
+      const granted = Boolean(customerInfo?.entitlements?.active?.['premium']);
+      if (granted) {
         setPremium(true);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        setErrorMessage('No active subscription was found to restore.');
       }
+    },
+    onError: (error: unknown) => {
+      console.log('Restore error:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setErrorMessage("Couldn't restore — check your connection and try again.");
     },
   });
 
@@ -167,9 +166,23 @@ export default function PremiumScreen() {
     ],
   }));
 
-  const handlePurchase = (pkg: PurchasesPackage) => {
+  const selectedPackage = annualPackage;
+
+  const handleSelect = (plan: 'annual') => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setErrorMessage(null);
+    setSelectedPlan(plan);
+  };
+
+  const handleContinue = () => {
+    if (!selectedPackage || isPurchasing) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    purchaseMutation.mutate(pkg);
+    setErrorMessage(null);
+    purchaseMutation.mutate(selectedPackage);
+  };
+
+  const openLink = (url: string) => {
+    Linking.openURL(url).catch((error) => console.log('Could not open link:', error));
   };
 
   const isPurchasing = purchaseMutation.isPending || restoreMutation.isPending;
@@ -348,61 +361,10 @@ export default function PremiumScreen() {
               </View>
             ) : (
               <>
-                {/* Weekly Option - Highlighted */}
-                {weeklyPackage && (
-                  <Pressable
-                    onPress={() => {
-                      setSelectedPlan('weekly');
-                      handlePurchase(weeklyPackage);
-                    }}
-                    disabled={isPurchasing}
-                    className="rounded-3xl overflow-hidden mb-4"
-                    style={{
-                      borderWidth: selectedPlan === 'weekly' ? 3 : 2,
-                      borderColor: selectedPlan === 'weekly' ? colors.accent.gold : `${colors.accent.gold}30`,
-                      opacity: selectedPlan === 'weekly' ? 1 : 0.6,
-                    }}
-                  >
-                    <LinearGradient
-                      colors={selectedPlan === 'weekly' ? ['#451a03', '#1a0f28'] : ['#1a1a1a', '#0f0f0f']}
-                      style={{ padding: spacing.md, paddingTop: spacing.lg, borderRadius: 24 }}
-                    >
-                      <View className="absolute top-0 right-0 bg-amber-500 px-4 py-1.5 rounded-bl-2xl">
-                        <Text className="text-xs font-bold text-black">MOST POPULAR</Text>
-                      </View>
-
-                      {selectedPlan === 'weekly' && (
-                        <View className="absolute top-4 left-4">
-                          <View
-                            className="w-6 h-6 rounded-full items-center justify-center"
-                            style={{ backgroundColor: colors.accent.gold }}
-                          >
-                            <Check size={16} color={colors.background.primary} strokeWidth={3} />
-                          </View>
-                        </View>
-                      )}
-
-                      <View className="flex-row items-baseline justify-center mt-2">
-                        <Text style={{ fontSize: 32, fontWeight: '700', color: selectedPlan === 'weekly' ? colors.text.primary : colors.text.secondary }}>
-                          {weeklyPackage.product.priceString}
-                        </Text>
-                        <Text style={{ fontSize: 18, color: colors.text.secondary, marginLeft: 4 }}>/week</Text>
-                      </View>
-
-                      <Text style={{ textAlign: 'center', fontSize: 15, color: colors.text.secondary, marginTop: 4 }}>
-                        Perfect for fishing season
-                      </Text>
-                    </LinearGradient>
-                  </Pressable>
-                )}
-
                 {/* Annual Option - Best Value */}
                 {annualPackage && (
                   <Pressable
-                    onPress={() => {
-                      setSelectedPlan('annual');
-                      handlePurchase(annualPackage);
-                    }}
+                    onPress={() => handleSelect('annual')}
                     disabled={isPurchasing}
                     className="rounded-3xl px-5 py-6 mb-4"
                     style={{
@@ -433,7 +395,7 @@ export default function PremiumScreen() {
                           Annual Pro
                         </Text>
                         <Text style={{ fontSize: 14, color: colors.semantic.success }}>
-                          Save 80% vs weekly
+                          Unlimited resizes, all year
                         </Text>
                       </View>
                       <View className="items-end">
@@ -445,6 +407,30 @@ export default function PremiumScreen() {
                     </View>
                   </Pressable>
                 )}
+
+                {/* Error message (surfaced, not silent) */}
+                {errorMessage && (
+                  <View
+                    className="rounded-2xl px-4 py-3 mb-3"
+                    style={{ backgroundColor: 'rgba(239,68,68,0.12)', borderWidth: 1, borderColor: 'rgba(239,68,68,0.35)' }}
+                  >
+                    <Text style={{ fontSize: 14, color: '#FCA5A5', textAlign: 'center' }}>
+                      {errorMessage}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Continue — select-then-confirm avoids accidental charges */}
+                <Pressable
+                  onPress={handleContinue}
+                  disabled={!selectedPackage || isPurchasing}
+                  className="rounded-2xl py-4 mb-1"
+                  style={{ backgroundColor: colors.accent.gold, opacity: !selectedPackage || isPurchasing ? 0.5 : 1 }}
+                >
+                  <Text style={{ textAlign: 'center', fontSize: 18, fontWeight: '700', color: colors.background.primary }}>
+                    {isPurchasing ? 'Processing…' : 'Continue'}
+                  </Text>
+                </Pressable>
 
                 {/* Restore Purchases */}
                 <Pressable
@@ -458,60 +444,27 @@ export default function PremiumScreen() {
                 </Pressable>
 
                 <Text style={{ textAlign: 'center', fontSize: 12, color: colors.text.tertiary, marginTop: spacing.sm }}>
-                  Cancel anytime. Auto-renews unless cancelled 24 hours before period ends.
+                  Cancel anytime. Auto-renews unless cancelled 24 hours before period ends. Payment is charged to your Apple ID.
                 </Text>
+
+                {/* Terms of Use + Privacy Policy — required on the subscription screen (3.1.2) */}
+                <View className="flex-row items-center justify-center mt-3">
+                  <Pressable onPress={() => openLink(TERMS_URL)} hitSlop={8}>
+                    <Text style={{ fontSize: 13, color: colors.text.secondary, textDecorationLine: 'underline' }}>
+                      Terms of Use
+                    </Text>
+                  </Pressable>
+                  <Text style={{ fontSize: 13, color: colors.text.tertiary, marginHorizontal: 8 }}>•</Text>
+                  <Pressable onPress={() => openLink(PRIVACY_URL)} hitSlop={8}>
+                    <Text style={{ fontSize: 13, color: colors.text.secondary, textDecorationLine: 'underline' }}>
+                      Privacy Policy
+                    </Text>
+                  </Pressable>
+                </View>
               </>
             )}
           </Animated.View>
 
-          {/* Testimonials */}
-          <Animated.View
-            entering={FadeInUp.delay(600).duration(400)}
-            style={{ paddingHorizontal: spacing.screenPadding, marginTop: spacing.xxl }}
-          >
-            <Text
-              style={{
-                fontSize: 20,
-                fontWeight: '700',
-                color: colors.text.primary,
-                textAlign: 'center',
-                marginBottom: spacing.md,
-              }}
-            >
-              What Fellow Anglers Say
-            </Text>
-            {TESTIMONIALS.map((testimonial) => (
-              <View
-                key={testimonial.name}
-                className="rounded-2xl p-4 mb-3"
-                style={{
-                  backgroundColor: `${colors.background.tertiary}50`,
-                  borderWidth: 1,
-                  borderColor: `${colors.background.secondary}50`,
-                }}
-              >
-                <View className="flex-row items-center mb-2">
-                  <View
-                    className="w-9 h-9 rounded-full items-center justify-center"
-                    style={{ backgroundColor: `${colors.brand.primary}30` }}
-                  >
-                    <Fish size={18} color={colors.brand.primary} />
-                  </View>
-                  <Text style={{ fontSize: 15, fontWeight: '600', color: colors.brand.primary, marginLeft: 8 }}>
-                    {testimonial.name}
-                  </Text>
-                  <View className="flex-row ml-auto">
-                    {[...Array(testimonial.rating)].map((_, i) => (
-                      <Star key={i} size={14} color={colors.accent.gold} fill={colors.accent.gold} />
-                    ))}
-                  </View>
-                </View>
-                <Text style={{ fontSize: 15, color: colors.text.secondary, fontStyle: 'italic' }}>
-                  "{testimonial.text}"
-                </Text>
-              </View>
-            ))}
-          </Animated.View>
         </ScrollView>
       </SafeAreaView>
     </View>

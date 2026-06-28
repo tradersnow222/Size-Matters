@@ -7,6 +7,7 @@ import {
   Dimensions,
   ScrollView,
   Modal as RNModal,
+  AccessibilityInfo,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -36,6 +37,7 @@ import { GlowingButton } from '@/components/GlowingButton';
 import { PaywallModal } from '@/components/PaywallModal';
 import { FeedbackModal } from '@/components/FeedbackModal';
 import { detectFishInImage, resizeFish } from '@/lib/fishEditor';
+import { persistImage } from '@/lib/fileStore';
 import * as MediaLibrary from 'expo-media-library';
 import { useAppStore, FishPhoto } from '@/lib/store';
 import { getRandomTagline, getSliderTagline, getRandomTitle } from '@/lib/taglines';
@@ -49,6 +51,14 @@ const IMAGE_SIZE = SCREEN_WIDTH - 48;
 // Minimum time the resize overlay (status + game) stays up, so a fast resize
 // doesn't flash the game and vanish before the user can engage with it.
 const MIN_RESIZE_OVERLAY_MS = 2800;
+
+// After the reveal, the before/after divider eases to rest here (fraction of
+// IMAGE_SIZE shown as the "before" original) instead of wiping all the way to the
+// bare result. A centered split keeps BOTH the original and the resized fish on
+// screen — the size contrast is the whole payoff — and parks the drag handle
+// mid-frame where it's obviously grabbable, so the comparison reads as something
+// the user controls rather than a one-shot animation that's already over.
+const REVEAL_REST_SPLIT = 0.5;
 
 // Maps fish scale value to slider percentage (0-100)
 // Creates a non-linear mapping where 1x is at 50%
@@ -91,6 +101,9 @@ export default function HomeScreen() {
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartRef = useRef(0);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest OS "Reduce Motion" setting, read synchronously when we kick off the
+  // reveal/nudge so we can honor it (Reanimated/RN have no reduced-motion hook).
+  const reduceMotionRef = useRef(false);
   const [showPaywall, setShowPaywall] = useState(false);
   // Whether the current edited image has been unlocked via the single ($0.99)
   // purchase, so it can be shared/saved watermark-free without a subscription.
@@ -105,12 +118,17 @@ export default function HomeScreen() {
   const shareableImageRef = useRef<ShareableImageRef>(null);
   const router = useRouter();
 
+  // Gallery entry id for the CURRENT edited image, so save + share don't create
+  // duplicate "My Catches" entries for the same resize.
+  const currentPhotoIdRef = useRef<string | null>(null);
+
   // Track previous snapped value to detect changes during gesture
   const lastSnappedValue = useRef(1.0);
 
   const isPremium = useAppStore((s) => s.isPremium);
   const freeEditsRemaining = useAppStore((s) => s.freeEditsRemaining);
   const addPhoto = useAppStore((s) => s.addPhoto);
+  const updatePhoto = useAppStore((s) => s.updatePhoto);
   const incrementEdits = useAppStore((s) => s.incrementEdits);
   const decrementFreeEdits = useAppStore((s) => s.decrementFreeEdits);
   const incrementShares = useAppStore((s) => s.incrementShares);
@@ -127,7 +145,9 @@ export default function HomeScreen() {
   // compareSlider = width of the BEFORE (original) overlay clipped from the left.
   // 0 => before fully hidden => the AFTER (resized) image is shown (the payoff).
   // IMAGE_SIZE => before covers everything => the original is shown.
-  const compareSlider = useSharedValue(0); // Start by showing the resized result
+  // The reveal animation drives this explicitly and rests it at a centered split
+  // (see resizeFishMutation.onSuccess); this initial value is just a pre-reveal default.
+  const compareSlider = useSharedValue(0);
   const sliderThumbScale = useSharedValue(1); // For thumb grow animation when dragging
   const uploadScale = useSharedValue(1); // For upload icon breathing scale
   const button3xScale = useSharedValue(1); // For 3x button nudge animation
@@ -195,6 +215,23 @@ export default function HomeScreen() {
   // Clear any pending reveal timer if the screen unmounts mid-resize.
   useEffect(() => () => {
     if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+  }, []);
+
+  // Track the OS "Reduce Motion" accessibility setting (and live changes) so the
+  // before/after reveal and the handle nudge can be skipped for users who opt out
+  // of non-essential animation.
+  useEffect(() => {
+    let mounted = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
+      if (mounted) reduceMotionRef.current = enabled;
+    });
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', (enabled) => {
+      reduceMotionRef.current = enabled;
+    });
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -292,6 +329,7 @@ export default function HomeScreen() {
       setNoFishDetected(false);
       setDetectedSpecies(undefined);
       setCurrentImageUnlocked(false);
+      currentPhotoIdRef.current = null;
 
       // Validate image contains a fish
       setIsValidatingImage(true);
@@ -328,11 +366,24 @@ export default function HomeScreen() {
       revealTimerRef.current = setTimeout(() => {
         revealTimerRef.current = null;
         setEditedImage(url);
-        // Reveal the resized result: flash the original, then wipe it away
-        // (IMAGE_SIZE -> 0) so the user watches the before→after transform land
-        // on the resized fish. They can drag the handle back to compare.
-        compareSlider.value = IMAGE_SIZE;
-        compareSlider.value = withTiming(0, { duration: 650, easing: Easing.inOut(Easing.ease) });
+        // Reveal the resized result, then SETTLE INTO A COMPARISON instead of
+        // dumping the user on the bare result with the handle jammed off-screen.
+        // Start on the original, wipe across to the full resized fish (the payoff
+        // beat), hold briefly so the size change registers against the otherwise
+        // identical photo, then ease back to a centered split so both states stay
+        // on screen and the handle rests mid-frame where it's clearly draggable.
+        // Under "Reduce Motion", skip the sweep and just present the split.
+        const restSplit = IMAGE_SIZE * REVEAL_REST_SPLIT;
+        if (reduceMotionRef.current) {
+          compareSlider.value = restSplit;
+        } else {
+          compareSlider.value = IMAGE_SIZE;
+          compareSlider.value = withSequence(
+            withTiming(0, { duration: 750, easing: Easing.inOut(Easing.ease) }), // wipe original away → full result
+            withTiming(0, { duration: 400 }),                                    // hold on the result so it lands
+            withTiming(restSplit, { duration: 450, easing: Easing.out(Easing.ease) }) // settle into the comparison
+          );
+        }
         incrementEdits();
         if (!isPremium) {
           decrementFreeEdits();
@@ -398,7 +449,11 @@ export default function HomeScreen() {
     }
   }, [selectedImage, editedImage, fishScale, noFishDetected, isValidatingImage, isResizing, hasUsedSizeButtons]);
 
-  // Animate swipe handle bounce when edited image is shown
+  // Nudge the swipe handle a few times once the comparison has settled, to signal
+  // it's draggable. The handle now rests mid-frame (see the reveal in
+  // resizeFishMutation.onSuccess), so this is a light "you can move me" wiggle
+  // rather than the primary signifier — finite (not an infinite loop), and skipped
+  // entirely under Reduce Motion.
   useEffect(() => {
     // Cancel any existing animation first
     cancelAnimation(swipeHandleBounce);
@@ -407,10 +462,8 @@ export default function HomeScreen() {
       // Reset interaction flag for new edited image
       hasInteractedWithSlider.value = false;
 
-      // Nudge the handle rightward after a short delay. The resized result is
-      // already shown (handle parked at the left), so this hints "drag right to
-      // reveal the original and compare."
       const timeout = setTimeout(() => {
+        if (reduceMotionRef.current) return; // respect Reduce Motion: no nudge
         swipeHandleBounce.value = withRepeat(
           withSequence(
             withTiming(0, { duration: 100 }), // Start at rest
@@ -420,10 +473,10 @@ export default function HomeScreen() {
             withTiming(0, { duration: 250, easing: Easing.out(Easing.ease) }), // Return to rest
             withTiming(0, { duration: 1500 }) // Pause before repeating
           ),
-          -1,
+          3, // finite — was -1 (infinite), which fought Reduce Motion and never rested
           false
         );
-      }, 800); // Start after the reveal animation finishes
+      }, 1700); // start after the reveal sequence (~1600ms) settles into the split
 
       return () => {
         clearTimeout(timeout);
@@ -444,15 +497,26 @@ export default function HomeScreen() {
       router.push('/(tabs)/premium');
       return;
     }
+    // At original size the primary button isn't a dead end: treat the tap as
+    // "make it bigger" and jump to 2x, so a first-timer always gets a result.
+    let scale = fishScale;
+    if (scale === 1.0) {
+      scale = 2.0;
+      setFishScale(2.0);
+      setSliderTagline(getSliderTagline(2.0));
+      if (!hasUsedSizeButtons) setHasUsedSizeButtons(true);
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     if (revealTimerRef.current) {
       clearTimeout(revealTimerRef.current);
       revealTimerRef.current = null;
     }
+    // New resize → its own gallery entry.
+    currentPhotoIdRef.current = null;
     resizeStartRef.current = Date.now();
     setIsResizing(true);
     setGameKey((k) => k + 1); // Increment key to force game remount
-    resizeFishMutation.mutate({ imageUri: selectedImage, scale: fishScale, species: detectedSpecies });
+    resizeFishMutation.mutate({ imageUri: selectedImage, scale, species: detectedSpecies });
   };
 
   const handleSliderChange = useCallback((value: number) => {
@@ -531,6 +595,39 @@ export default function HomeScreen() {
       .activeOffsetX([-10, 10]) // Only activate for horizontal drags
   , [handleGestureSliderUpdate, sliderThumbScale]);
 
+  // Persist the current resize into "My Catches" exactly once. Copies the cache-
+  // directory images into the app's document directory first (cache files get
+  // purged by iOS on update / under storage pressure, which would blank the
+  // gallery), and dedupes so save + share don't add two entries for one resize.
+  const ensureSavedToGallery = async (opts: { unlocked: boolean; share: boolean }) => {
+    const existingId = currentPhotoIdRef.current;
+    if (existingId) {
+      const existing = useAppStore.getState().photos.find((p) => p.id === existingId);
+      updatePhoto(existingId, {
+        isUnlocked: opts.unlocked || existing?.isUnlocked,
+        shareCount: (existing?.shareCount ?? 0) + (opts.share ? 1 : 0),
+      });
+      return;
+    }
+    const [persistedOriginal, persistedEdited] = await Promise.all([
+      persistImage(selectedImage, 'orig'),
+      persistImage(editedImage, 'edit'),
+    ]);
+    const id = Date.now().toString();
+    const newPhoto: FishPhoto = {
+      id,
+      originalUri: persistedOriginal ?? selectedImage!,
+      editedUri: persistedEdited ?? editedImage,
+      fishScale,
+      createdAt: Date.now(),
+      shareCount: opts.share ? 1 : 0,
+      title: getRandomTitle(),
+      isUnlocked: opts.unlocked,
+    };
+    addPhoto(newPhoto);
+    currentPhotoIdRef.current = id;
+  };
+
   const handleShare = async () => {
     if (!editedImage || !shareableImageRef.current) return;
 
@@ -548,18 +645,8 @@ export default function HomeScreen() {
       // Capture the image (watermark-free for premium or unlocked images)
       const imageUri = await shareableImageRef.current.capture();
 
-      // Save to gallery
-      const newPhoto: FishPhoto = {
-        id: Date.now().toString(),
-        originalUri: selectedImage!,
-        editedUri: editedImage,
-        fishScale,
-        createdAt: Date.now(),
-        shareCount: 1,
-        title: getRandomTitle(),
-        isUnlocked: true,
-      };
-      addPhoto(newPhoto);
+      // Persist into "My Catches" (deduped, copied out of cache)
+      await ensureSavedToGallery({ unlocked: true, share: true });
       incrementShares();
 
       // Share the image
@@ -601,18 +688,7 @@ export default function HomeScreen() {
       // Capture the image (with watermark for non-premium users)
       const imageUri = await shareableImageRef.current.capture();
 
-      // Save to gallery
-      const newPhoto: FishPhoto = {
-        id: Date.now().toString(),
-        originalUri: selectedImage!,
-        editedUri: editedImage,
-        fishScale,
-        createdAt: Date.now(),
-        shareCount: 1,
-        title: getRandomTitle(),
-        isUnlocked: false,
-      };
-      addPhoto(newPhoto);
+      await ensureSavedToGallery({ unlocked: false, share: true });
       incrementShares();
 
       // Share the image
@@ -653,18 +729,8 @@ export default function HomeScreen() {
       // Save to camera roll
       await MediaLibrary.saveToLibraryAsync(capturedUri);
 
-      // Save to app gallery too
-      const newPhoto: FishPhoto = {
-        id: Date.now().toString(),
-        originalUri: selectedImage!,
-        editedUri: editedImage,
-        fishScale,
-        createdAt: Date.now(),
-        shareCount: 0,
-        title: getRandomTitle(),
-        isUnlocked: isPremium || currentImageUnlocked,
-      };
-      addPhoto(newPhoto);
+      // Save to app gallery too (deduped, copied out of cache)
+      await ensureSavedToGallery({ unlocked: isPremium || currentImageUnlocked, share: false });
 
       setSaveSuccess(true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -702,17 +768,7 @@ export default function HomeScreen() {
         await new Promise((resolve) => setTimeout(resolve, 150));
         if (shareableImageRef.current) {
           const imageUri = await shareableImageRef.current.capture();
-          const newPhoto: FishPhoto = {
-            id: Date.now().toString(),
-            originalUri: selectedImage!,
-            editedUri: editedImage!,
-            fishScale,
-            createdAt: Date.now(),
-            shareCount: 1,
-            title: getRandomTitle(),
-            isUnlocked: true,
-          };
-          addPhoto(newPhoto);
+          await ensureSavedToGallery({ unlocked: true, share: true });
           incrementShares();
 
           if (await Sharing.isAvailableAsync()) {
@@ -749,6 +805,7 @@ export default function HomeScreen() {
     setNoFishDetected(false);
     setDetectedSpecies(undefined);
     setCurrentImageUnlocked(false);
+    currentPhotoIdRef.current = null;
   };
 
   const getScaleLabel = () => {
@@ -920,14 +977,6 @@ export default function HomeScreen() {
                       </View>
                     </Animated.View>
 
-                    {/* Labels */}
-                    <View className="absolute top-3 left-3 bg-black/60 px-2 py-1 rounded-lg">
-                      <Text className="text-white text-xs font-bold">BEFORE</Text>
-                    </View>
-                    <View className="absolute top-3 right-3 bg-cyan-600/80 px-2 py-1 rounded-lg">
-                      <Text className="text-white text-xs font-bold">AFTER</Text>
-                    </View>
-
                     {/* Hint text */}
                     <View className="absolute bottom-3 left-0 right-0 items-center">
                       <View className="bg-black/50 px-3 py-1 rounded-full">
@@ -1091,11 +1140,8 @@ export default function HomeScreen() {
                     // Has free resizes - show normal button
                     <Pressable
                       onPress={handleResize}
-                      disabled={isResizing || fishScale === 1.0}
-                      className={cn(
-                        'rounded-xl overflow-hidden active:scale-[0.98]',
-                        fishScale === 1.0 && 'opacity-50'
-                      )}
+                      disabled={isResizing}
+                      className="rounded-xl overflow-hidden active:scale-[0.98]"
                     >
                       <LinearGradient
                         colors={['#0891b2', '#22d3ee', '#06b6d4']}
@@ -1119,7 +1165,7 @@ export default function HomeScreen() {
                   <View className="mt-1.5">
                     {fishScale === 1.0 ? (
                       <Text className="text-center text-slate-400 text-xs">
-                        Adjust the fish size to resize
+                        Slide to pick a size — or just tap to go 2×
                       </Text>
                     ) : freeEditsRemaining > 1 ? (
                       <Text className="text-center text-slate-400 text-xs">
@@ -1185,35 +1231,64 @@ export default function HomeScreen() {
                   </View>
                 )}
 
-                {/* Error message */}
-                {resizeFishMutation.isError && !isResizing && (
-                  <View className="bg-red-900/30 rounded-xl p-3 mt-2">
-                    <View className="flex-row items-center justify-center mb-2">
-                      <AlertCircle size={16} color="#ef4444" />
-                      <Text className="text-red-400 text-sm font-semibold ml-2">
-                        Couldn't resize the fish
+                {/* Error message — tailored to the actual failure so a network blip
+                    or a busy server isn't misreported as a bad photo. */}
+                {resizeFishMutation.isError && !isResizing && (() => {
+                  const msg = resizeFishMutation.error instanceof Error ? resizeFishMutation.error.message : '';
+                  const isTimeout = /tim(e|ed)\s?out|connection/i.test(msg);
+                  const isBusy = /busy|rate limit/i.test(msg);
+                  const isConfig = /configured|api key|rejected the request|invalid|not included/i.test(msg);
+                  const headline = isTimeout
+                    ? 'Connection problem'
+                    : isBusy
+                    ? 'Servers are busy'
+                    : isConfig
+                    ? 'Resize unavailable right now'
+                    : "Couldn't resize the fish";
+                  const detail = isTimeout
+                    ? 'That took too long — check your internet connection and try again.'
+                    : isBusy
+                    ? 'Lots of anglers resizing right now. Give it a few seconds and try again.'
+                    : isConfig
+                    ? 'Resizing is temporarily unavailable. Please try again later.'
+                    : 'The AI had trouble with this one. Try again, or use a different photo.';
+                  return (
+                    <View className="bg-red-900/30 rounded-xl p-3 mt-2">
+                      <View className="flex-row items-center justify-center mb-2">
+                        <AlertCircle size={16} color="#ef4444" />
+                        <Text className="text-red-400 text-sm font-semibold ml-2">
+                          {headline}
+                        </Text>
+                      </View>
+                      <Text className="text-slate-400 text-center text-xs mb-2">
+                        {detail}
                       </Text>
+                      {__DEV__ && !!msg && (
+                        <Text className="text-red-300/70 text-center text-[10px] mb-2">
+                          {msg}
+                        </Text>
+                      )}
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={handleResize}
+                          className="flex-1 bg-cyan-600/30 rounded-lg py-2 active:scale-[0.98]"
+                        >
+                          <Text className="text-cyan-300 text-center text-sm font-medium">
+                            Try Again
+                          </Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={pickImage}
+                          className="flex-1 bg-slate-700/50 rounded-lg py-2 active:scale-[0.98]"
+                        >
+                          <Text className="text-cyan-400 text-center text-sm font-medium">
+                            New Photo
+                          </Text>
+                        </Pressable>
+                      </View>
                     </View>
-                    <Text className="text-slate-400 text-center text-xs mb-2">
-                      The AI had trouble processing this image. Try a different photo or angle.
-                    </Text>
-                    {/* Dev-only: show the real failure (e.g. an auth/config error) so a
-                        misconfigured build isn't mistaken for a bad photo. */}
-                    {__DEV__ && resizeFishMutation.error instanceof Error && (
-                      <Text className="text-red-300/70 text-center text-[10px] mb-2">
-                        {resizeFishMutation.error.message}
-                      </Text>
-                    )}
-                    <Pressable
-                      onPress={pickImage}
-                      className="bg-slate-700/50 rounded-lg py-2 active:scale-98"
-                    >
-                      <Text className="text-cyan-400 text-center text-sm font-medium">
-                        Try Another Photo
-                      </Text>
-                    </Pressable>
-                  </View>
-                )}
+                  );
+                })()}
               </View>
             )}
           </View>
