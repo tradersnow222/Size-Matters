@@ -1,0 +1,61 @@
+# .easignore — controls what EAS Build uploads to the cloud builder.
+#
+# IMPORTANT: this lives at the GIT ROOT on purpose. The Expo app is in size-matters/,
+# but the git repository root is HERE, and EAS archives the project from the git root —
+# so a size-matters/.easignore is NOT applied (its paths resolve against the repo root
+# and never match the subfolder). That mismatch was uploading the entire repo
+# (node_modules + 166 MB of dev screenshots + sibling folders) ≈ 491 MB every build.
+# Paths below are repo-root-relative.
+#
+# When a .easignore is present, EAS uses it INSTEAD of .gitignore, so this is a full
+# superset of the excludes that matter.
+
+# === Everything in this repo EXCEPT the Expo app (size-matters/) ===
+/Assets/
+/Revenue Cat/
+/Size Matters RevenueCat/
+/SM Content/
+/proxy/
+/resize-demo/
+/push-to-github.sh
+
+# === App dependencies (reinstalled on the build server from bun.lock) ===
+node_modules/
+
+# === Secrets / credentials (provided via EAS env vars; never upload) ===
+.env
+.env.*
+*.env
+.env*.local
+!.env.example
+*.p8
+*.p12
+*.key
+*.jks
+*.pem
+*.mobileprovision
+
+# === Generated native projects (EAS runs prebuild) ===
+size-matters/ios/
+size-matters/android/
+
+# === Expo / Metro / build caches ===
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+*.tsbuildinfo
+*.orig.*
+expo.log
+
+# === Heavy web/dev screenshots (~166 MB) — keep ONLY the FishTapGame sound effects ===
+size-matters/public/*
+!size-matters/public/*.mp3
+
+# === logs & OS cruft ===
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+*.DS_Store
