@@ -36,8 +36,9 @@ import { ResizeStatus } from '@/components/ResizeStatus';
 import { GlowingButton } from '@/components/GlowingButton';
 import { PaywallModal } from '@/components/PaywallModal';
 import { FeedbackModal } from '@/components/FeedbackModal';
-import { detectFishInImage, resizeFish } from '@/lib/fishEditor';
+import { detectFishInImage, resizeFish, getEngineInfo } from '@/lib/fishEditor';
 import { persistImage } from '@/lib/fileStore';
+import { track, timeEvent, incrementProfile, setProfile } from '@/lib/analytics';
 import * as MediaLibrary from 'expo-media-library';
 import { useAppStore, FishPhoto } from '@/lib/store';
 import { getRandomTagline, getSliderTagline, getRandomTitle } from '@/lib/taglines';
@@ -301,6 +302,7 @@ export default function HomeScreen() {
 
     if (!result.canceled) {
       const asset = result.assets[0];
+      track('Photo Picked', { source: 'library' });
 
       // Downscale before any AI call. A full-resolution catch photo becomes a
       // multi-MB base64 string that blocks the JS thread (during detect + resize)
@@ -333,16 +335,27 @@ export default function HomeScreen() {
 
       // Validate image contains a fish
       setIsValidatingImage(true);
+      const detectEngine = getEngineInfo();
+      timeEvent('Detection Completed'); // injects $duration onto the matching event
+      track('Detection Started', { provider: detectEngine.detectProvider });
       try {
         const detection = await detectFishInImage(imageUri);
         // Remember the detected species so the resize step can keep the same fish.
         setDetectedSpecies(detection.species);
+        track('Detection Completed', {
+          has_fish: detection.hasFish,
+          confidence: detection.confidence,
+          species: detection.species,
+          provider: detectEngine.detectProvider,
+        });
         if (!detection.hasFish && detection.confidence !== 'low') {
           setNoFishDetected(true);
+          track('No Fish Prompt Shown', { confidence: detection.confidence });
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
         }
       } catch (error) {
         console.log('Fish detection error (non-blocking):', error);
+        track('Detection Failed', { error_type: 'exception', provider: detectEngine.detectProvider });
       } finally {
         setIsValidatingImage(false);
       }
@@ -359,7 +372,23 @@ export default function HomeScreen() {
 
       return result.editedImageUri!;
     },
-    onSuccess: (url) => {
+    onSuccess: (url, variables) => {
+      // Track the resize the instant the engine returns — BEFORE the minimum overlay
+      // hold below — so duration_sec is true engine latency, not the UI floor.
+      const durationSec = Math.round((Date.now() - resizeStartRef.current) / 100) / 10;
+      const engine = getEngineInfo();
+      track('Resize Completed', {
+        factor: variables.scale,
+        species: variables.species,
+        provider: engine.resizeProvider,
+        model_id: engine.resizeModel,
+        is_subscriber: isPremium,
+        edit_number: useAppStore.getState().totalEdits + 1,
+        duration_sec: durationSec,
+      });
+      incrementProfile('lifetime_resizes', 1);
+      setProfile({ last_resize_at: new Date().toISOString() });
+
       // Hold the overlay until it has been up at least MIN_RESIZE_OVERLAY_MS, so a
       // fast resize doesn't snap the game away the instant it appears. Then reveal.
       const remaining = Math.max(0, MIN_RESIZE_OVERLAY_MS - (Date.now() - resizeStartRef.current));
@@ -392,13 +421,32 @@ export default function HomeScreen() {
         setIsResizing(false);
       }, remaining);
     },
-    onError: (error) => {
+    onError: (error, variables) => {
       // Surface errors promptly (no min-hold) — a quick config error shouldn't sit
       // behind the game pretending to work.
       if (revealTimerRef.current) {
         clearTimeout(revealTimerRef.current);
         revealTimerRef.current = null;
       }
+      // Bucket the failure to match the app's hardened error handling — this is the
+      // metric to watch (paying users hitting a wall).
+      const msg = error instanceof Error ? error.message : String(error);
+      const errorType = /tim(e|ed)\s?out|connection/i.test(msg)
+        ? 'timeout'
+        : /busy|rate limit/i.test(msg)
+        ? 'rate_limited'
+        : /configured|api key|rejected the request|invalid|not included/i.test(msg)
+        ? 'config_error'
+        : /blocked by the model/i.test(msg)
+        ? 'safety_block'
+        : 'api_error';
+      const engine = getEngineInfo();
+      track('Resize Failed', {
+        error_type: errorType,
+        provider: engine.resizeProvider,
+        model_id: engine.resizeModel,
+        factor: variables.scale,
+      });
       console.log('Fish resize error:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setIsResizing(false);
@@ -516,6 +564,16 @@ export default function HomeScreen() {
     resizeStartRef.current = Date.now();
     setIsResizing(true);
     setGameKey((k) => k + 1); // Increment key to force game remount
+    const resizeEngine = getEngineInfo();
+    timeEvent('Resize Completed');
+    track('Resize Started', {
+      factor: scale,
+      species: detectedSpecies,
+      provider: resizeEngine.resizeProvider,
+      model_id: resizeEngine.resizeModel,
+      is_subscriber: isPremium,
+      free_resizes_remaining: freeEditsRemaining,
+    });
     resizeFishMutation.mutate({ imageUri: selectedImage, scale, species: detectedSpecies });
   };
 
@@ -523,6 +581,7 @@ export default function HomeScreen() {
     lastSnappedValue.current = value;
     setFishScale(value);
     setSliderTagline(getSliderTagline(value));
+    track('Resize Adjusted', { factor: value, method: 'preset' });
     Haptics.selectionAsync();
     // Mark that user has used size buttons (stops animation permanently)
     if (!hasUsedSizeButtons) {
@@ -566,6 +625,7 @@ export default function HomeScreen() {
       lastSnappedValue.current = snappedScale;
       setFishScale(snappedScale);
       setSliderTagline(getSliderTagline(snappedScale));
+      track('Resize Adjusted', { factor: snappedScale, method: 'slider' });
       Haptics.selectionAsync();
       // Mark that user has used size buttons (stops animation permanently)
       if (!hasUsedSizeButtons) {
@@ -648,6 +708,8 @@ export default function HomeScreen() {
       // Persist into "My Catches" (deduped, copied out of cache)
       await ensureSavedToGallery({ unlocked: true, share: true });
       incrementShares();
+      track('Photo Shared', { has_watermark: false, source: 'home', factor: fishScale, species: detectedSpecies });
+      incrementProfile('lifetime_shares', 1);
 
       // Share the image
       if (await Sharing.isAvailableAsync()) {
@@ -690,6 +752,8 @@ export default function HomeScreen() {
 
       await ensureSavedToGallery({ unlocked: false, share: true });
       incrementShares();
+      track('Photo Shared', { has_watermark: true, source: 'home', factor: fishScale, species: detectedSpecies });
+      incrementProfile('lifetime_shares', 1);
 
       // Share the image
       if (await Sharing.isAvailableAsync()) {
@@ -716,6 +780,7 @@ export default function HomeScreen() {
       // never reads the library. This shows iOS's lighter "Add to Photos" prompt
       // and needs only NSPhotoLibraryAddUsageDescription (added in app.json).
       const { status } = await MediaLibrary.requestPermissionsAsync(true);
+      track('Photo Permission Result', { granted: status === 'granted', status });
       if (status !== 'granted') {
         console.log('Media library permission denied');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -731,6 +796,14 @@ export default function HomeScreen() {
 
       // Save to app gallery too (deduped, copied out of cache)
       await ensureSavedToGallery({ unlocked: isPremium || currentImageUnlocked, share: false });
+
+      track('Photo Saved', {
+        factor: fishScale,
+        species: detectedSpecies,
+        has_watermark: !(isPremium || currentImageUnlocked),
+        destination: 'camera_roll',
+        source: 'home',
+      });
 
       setSaveSuccess(true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -770,6 +843,8 @@ export default function HomeScreen() {
           const imageUri = await shareableImageRef.current.capture();
           await ensureSavedToGallery({ unlocked: true, share: true });
           incrementShares();
+          track('Photo Shared', { has_watermark: false, source: 'home', factor: fishScale, species: detectedSpecies });
+          incrementProfile('lifetime_shares', 1);
 
           if (await Sharing.isAvailableAsync()) {
             await Sharing.shareAsync(imageUri, { mimeType: 'image/png' });
@@ -1033,7 +1108,10 @@ export default function HomeScreen() {
                       </Text>
                       <View className="flex-row gap-3">
                         <Pressable
-                          onPress={pickImage}
+                          onPress={() => {
+                            track('No Fish Prompt Result', { action: 'try_another' });
+                            pickImage();
+                          }}
                           className="bg-cyan-600 rounded-xl px-6 py-3 active:scale-95"
                         >
                           <View className="flex-row items-center">
@@ -1042,7 +1120,10 @@ export default function HomeScreen() {
                           </View>
                         </Pressable>
                         <Pressable
-                          onPress={() => setNoFishDetected(false)}
+                          onPress={() => {
+                            track('No Fish Prompt Result', { action: 'use_anyway' });
+                            setNoFishDetected(false);
+                          }}
                           className="bg-slate-700 rounded-xl px-6 py-3 active:scale-95"
                         >
                           <Text className="text-slate-300 font-bold">Use Anyway</Text>
@@ -1477,6 +1558,7 @@ export default function HomeScreen() {
       {/* Paywall Modal */}
       <PaywallModal
         visible={showPaywall}
+        placement="watermark_removal_home"
         onClose={() => {
           setShowPaywall(false);
           setPendingAction(null);

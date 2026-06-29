@@ -17,6 +17,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Fish } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useFonts, DancingScript_700Bold } from '@expo-google-fonts/dancing-script';
+import { track, timeEvent } from '@/lib/analytics';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.2;
@@ -24,6 +25,9 @@ const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.2;
 interface OnboardingSplashProps {
   onComplete: () => void;
 }
+
+// Bump when the onboarding flow changes, so funnels can be compared across versions.
+const ONBOARDING_VERSION = 'v1';
 
 const STEPS = [
   {
@@ -96,6 +100,11 @@ export function OnboardingSplash({ onComplete }: OnboardingSplashProps) {
   };
 
   useEffect(() => {
+    // Onboarding analytics: mark the start and time the whole flow ("Onboarding
+    // Completed" then carries $duration). "Step Viewed" is fired per step below.
+    track('Onboarding Started', { onboarding_version: ONBOARDING_VERSION });
+    timeEvent('Onboarding Completed');
+
     // Initial animation sequence
     fishScale.value = withSpring(1, { damping: 8, stiffness: 100 });
     fishY.value = withSpring(0, { damping: 12 });
@@ -139,6 +148,13 @@ export function OnboardingSplash({ onComplete }: OnboardingSplashProps) {
   }, []);
 
   useEffect(() => {
+    // One event per step (step in a property) — drives the onboarding drop-off funnel.
+    track('Onboarding Step Viewed', {
+      step_index: currentStep,
+      step_name: STEPS[currentStep].title,
+      onboarding_version: ONBOARDING_VERSION,
+    });
+
     // Special animation for step 2 (the big fish reveal)
     if (currentStep === 1) {
       fishScale.value = withSequence(
@@ -182,6 +198,7 @@ export function OnboardingSplash({ onComplete }: OnboardingSplashProps) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } else {
       // Complete onboarding
+      track('Onboarding Completed', { onboarding_version: ONBOARDING_VERSION });
       translateX.value = withTiming(-STEPS.length * SCREEN_WIDTH, { duration: 300 });
       fishScale.value = withSequence(
         withSpring(1.5, { damping: 5 }),

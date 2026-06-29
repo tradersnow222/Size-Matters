@@ -82,6 +82,7 @@
     "expo-system-ui": "~5.0.7",
     "expo-web-browser": "~14.2.0",
     "lucide-react-native": "^0.468.0",
+    "mixpanel-react-native": "^3.4.0",
     "nativewind": "~4.1.23",
     "patch-package": "^8.0.0",
     "pretty-format": "^29.7.0",

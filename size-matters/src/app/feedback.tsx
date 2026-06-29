@@ -17,6 +17,7 @@ import Animated, { FadeIn, FadeInDown, SlideInDown } from 'react-native-reanimat
 import { Send, X, Frown, Meh, ThumbsDown, HelpCircle, Sparkles } from 'lucide-react-native';
 import { useAppStore } from '@/lib/store';
 import { sendFeedbackEmail } from '@/lib/appConfig';
+import { track } from '@/lib/analytics';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -61,6 +62,10 @@ export default function FeedbackScreen() {
     const reasonLabel = feedbackReasons.find((r) => r.id === selectedReason)?.label ?? selectedReason;
     const body = `Reason: ${reasonLabel}\n\nDetails: ${additionalFeedback.trim() || '(none)'}`;
     await sendFeedbackEmail('Size Matters - Deletion Feedback', body);
+    track('Feedback Submitted', {
+      reason: selectedReason,
+      has_detail: additionalFeedback.trim().length > 0,
+    });
 
     setHasProvidedFeedback(true);
     setLastFeedbackPromptTime(Date.now());

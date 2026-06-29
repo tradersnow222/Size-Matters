@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import { X, Send } from 'lucide-react-native';
 import { colors, spacing } from '@/lib/design';
 import { useAppStore } from '@/lib/store';
 import { requestAppReview, sendFeedbackEmail } from '@/lib/appConfig';
+import { track } from '@/lib/analytics';
 
 interface FeedbackModalProps {
   visible: boolean;
@@ -32,6 +33,11 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
   const setHasProvidedFeedback = useAppStore((s) => s.setHasProvidedFeedback);
   const setLastFeedbackPromptTime = useAppStore((s) => s.setLastFeedbackPromptTime);
 
+  // "Rate Prompt Shown" — funnel entry for the post-win review ask.
+  useEffect(() => {
+    if (visible) track('Rate Prompt Shown', { trigger: 'post_win' });
+  }, [visible]);
+
   const handlePositive = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setStep('positive');
@@ -44,6 +50,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
 
   const handleRateOnAppStore = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    track('Rate Prompt Result', { action: 'native_review' });
     setHasRatedApp(true);
     setLastFeedbackPromptTime(Date.now());
 
@@ -67,6 +74,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
     // Deliver the feedback to the support inbox (native mail composer, with a
     // mailto fallback) so it is never silently dropped.
     await sendFeedbackEmail('Size Matters Feedback', feedback.trim());
+    track('Rate Prompt Result', { action: 'feedback' });
 
     setHasProvidedFeedback(true);
     setLastFeedbackPromptTime(Date.now());
@@ -81,6 +89,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
 
   const handleMaybeLater = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    track('Rate Prompt Result', { action: 'dismissed' });
     setLastFeedbackPromptTime(Date.now());
     onClose();
     resetModal();

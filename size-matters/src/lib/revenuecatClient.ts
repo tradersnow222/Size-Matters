@@ -218,6 +218,27 @@ export const setUserId = (userId: string): Promise<RevenueCatResult<void>> => {
 };
 
 /**
+ * Unify identity with Mixpanel by storing Mixpanel's distinct_id as a reserved
+ * RevenueCat attribute. RevenueCat's server-side Mixpanel integration then attributes
+ * subscription/revenue events to the SAME Mixpanel user as the in-app product events.
+ *
+ * We use this (rather than `Purchases.logIn(id)`) precisely because the app has no auth
+ * and a live anonymous subscriber base — this never changes RevenueCat's App User ID, so
+ * existing subscribers are untouched. The exact attribute name is `$mixpanelDistinctId`
+ * (lowercase final "Id"); this portable `setAttributes` path works on every SDK version.
+ *
+ * @param distinctId - Mixpanel's distinct_id (from analytics.getDistinctId())
+ * @returns RevenueCatResult<void> describing success/failure
+ */
+export const setMixpanelDistinctId = (
+  distinctId: string,
+): Promise<RevenueCatResult<void>> => {
+  return guardRevenueCatUsage("setMixpanelDistinctId", async () => {
+    await Purchases.setAttributes({ $mixpanelDistinctId: distinctId });
+  });
+};
+
+/**
  * Log out the current user
  *
  * @returns RevenueCatResult<void> describing success/failure

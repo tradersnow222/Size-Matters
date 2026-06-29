@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
 import { View, Text, ScrollView, Pressable, ActivityIndicator, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -32,7 +33,11 @@ import {
   isRevenueCatEnabled,
 } from '@/lib/revenuecatClient';
 import { PRIVACY_URL, TERMS_URL } from '@/lib/appConfig';
+import { track, syncSubscriptionState } from '@/lib/analytics';
 import type { PurchasesPackage } from 'react-native-purchases';
+
+// Every paywall event on this screen shares one placement so the funnel segments cleanly.
+const PLACEMENT = 'premium_tab';
 
 const FEATURES = [
   {
@@ -87,12 +92,29 @@ export default function PremiumScreen() {
     checkSubscription();
   }, [setPremium]);
 
+  // "Paywall Viewed" — fires when the Go Pro tab gains focus (skipped if already premium,
+  // since that state shows the "You're a Legend" screen, not a paywall).
+  useFocusEffect(
+    useCallback(() => {
+      if (!isPremium) {
+        track('Paywall Viewed', {
+          placement: PLACEMENT,
+          free_resizes_remaining: useAppStore.getState().freeEditsRemaining,
+        });
+      }
+    }, [isPremium]),
+  );
+
   // Purchase mutation
   const purchaseMutation = useMutation({
     mutationFn: async (pkg: PurchasesPackage) => {
       const result = await purchasePackage(pkg);
       if (!result.ok) {
-        throw new Error(result.reason);
+        const err = new Error(result.reason) as Error & { userCancelled?: boolean };
+        err.userCancelled = Boolean(
+          (result.error as { userCancelled?: boolean } | undefined)?.userCancelled,
+        );
+        throw err;
       }
       return result.data;
     },
@@ -100,6 +122,15 @@ export default function PremiumScreen() {
       const granted = Boolean(customerInfo?.entitlements?.active?.['premium']);
       if (granted) {
         setPremium(true);
+        syncSubscriptionState();
+        track('Purchase Completed', {
+          plan_id: '$rc_annual',
+          placement: PLACEMENT,
+          is_trial: false,
+          price: annualPackage?.product.price,
+          currency: annualPackage?.product.currencyCode,
+        });
+        track('Entitlement Changed', { entitlement: 'premium', source: 'purchase' });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -109,6 +140,12 @@ export default function PremiumScreen() {
     onError: (error: unknown) => {
       console.log('Purchase error:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      track('Purchase Failed', {
+        reason: error instanceof Error ? error.message : 'unknown',
+        user_cancelled: Boolean((error as { userCancelled?: boolean })?.userCancelled),
+        placement: PLACEMENT,
+        plan_id: '$rc_annual',
+      });
       setErrorMessage("That didn't go through — you haven't been charged. Try again or Restore Purchases.");
     },
   });
@@ -124,8 +161,11 @@ export default function PremiumScreen() {
     },
     onSuccess: async (customerInfo) => {
       const granted = Boolean(customerInfo?.entitlements?.active?.['premium']);
+      track('Purchase Restored', { found_subscription: granted, placement: PLACEMENT });
       if (granted) {
         setPremium(true);
+        syncSubscriptionState();
+        track('Entitlement Changed', { entitlement: 'premium', source: 'restore' });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -172,12 +212,24 @@ export default function PremiumScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setErrorMessage(null);
     setSelectedPlan(plan);
+    track('Plan Selected', {
+      plan_id: '$rc_annual',
+      placement: PLACEMENT,
+      price: annualPackage?.product.price,
+      currency: annualPackage?.product.currencyCode,
+    });
   };
 
   const handleContinue = () => {
     if (!selectedPackage || isPurchasing) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setErrorMessage(null);
+    track('Purchase Started', {
+      plan_id: selectedPackage.identifier,
+      placement: PLACEMENT,
+      price: selectedPackage.product.price,
+      currency: selectedPackage.product.currencyCode,
+    });
     purchaseMutation.mutate(selectedPackage);
   };
 

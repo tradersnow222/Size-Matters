@@ -6,15 +6,24 @@ import { useColorScheme } from '@/lib/useColorScheme';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useAppStore } from '@/lib/store';
-import { hasEntitlement } from '@/lib/revenuecatClient';
+import { hasEntitlement, setMixpanelDistinctId } from '@/lib/revenuecatClient';
+import {
+  initAnalytics,
+  track,
+  flush,
+  getDistinctId,
+  consumeFirstOpen,
+  setProfileOnce,
+  syncSubscriptionState,
+} from '@/lib/analytics';
 import { OnboardingSplash } from '@/components/OnboardingSplash';
 import { ReturningUserSplash } from '@/components/ReturningUserSplash';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import * as QuickActions from 'expo-quick-actions';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 export const unstable_settings = {
   initialRouteName: '(tabs)',
@@ -87,12 +96,39 @@ export default function RootLayout() {
   useEffect(() => {
     const prepare = async () => {
       await loadFromStorage();
+
+      // Analytics: init Mixpanel (no-op without a token), then hand its anonymous
+      // distinct_id to RevenueCat so server-side revenue lands on the same person.
+      await initAnalytics();
+      getDistinctId()
+        .then((id) => {
+          if (id) setMixpanelDistinctId(id);
+        })
+        .catch(() => {});
+
+      // App-open events. "App Installed" fires exactly once per install.
+      const firstOpen = await consumeFirstOpen();
+      if (firstOpen) {
+        track('App Installed');
+        setProfileOnce({ $created: new Date().toISOString() });
+      }
+      track('App Opened', { is_first_open: firstOpen, source: 'cold' });
+
       // Re-sync premium from RevenueCat (the source of truth) so a lapsed,
       // restored, or cross-device subscription is reflected instead of trusting
       // only the cached flag. Non-blocking; only overwrites on a definitive answer.
       hasEntitlement('premium')
         .then((res) => {
-          if (res.ok) useAppStore.getState().setPremium(res.data);
+          if (!res.ok) return;
+          const wasPremium = useAppStore.getState().isPremium;
+          useAppStore.getState().setPremium(res.data);
+          syncSubscriptionState();
+          if (res.data !== wasPremium) {
+            track('Entitlement Changed', {
+              entitlement: res.data ? 'premium' : 'none',
+              source: 'launch_sync',
+            });
+          }
         })
         .catch(() => {});
       // Check store state after loading
@@ -107,6 +143,23 @@ export default function RootLayout() {
       await SplashScreen.hideAsync();
     };
     prepare();
+  }, []);
+
+  // Session lifecycle: a foreground resume is a fresh "App Opened" (cold opens are tracked
+  // in prepare()); on background we flush the queue. The ref gates out the initial active.
+  const appStateRef = useRef(AppState.currentState);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if (next === 'active' && /inactive|background/.test(prev)) {
+        track('App Opened', { is_first_open: false, source: 'foreground' });
+      } else if (next === 'background') {
+        track('App Backgrounded');
+        flush();
+      }
+    });
+    return () => sub.remove();
   }, []);
 
   const handleOnboardingComplete = () => {

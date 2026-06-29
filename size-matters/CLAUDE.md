@@ -29,8 +29,16 @@ A mobile app for anglers: upload a catch photo and AI resizes the fish (50%–30
 - Keys: `EXPO_PUBLIC_REVENUECAT_APPLE_KEY` (prod iOS), `EXPO_PUBLIC_REVENUECAT_GOOGLE_KEY` (prod Android), `EXPO_PUBLIC_REVENUECAT_TEST_KEY` (dev). These are publishable RevenueCat SDK keys — safe to ship.
 - Products/offerings are configured in the RevenueCat dashboard (developer's own account).
 
+## Analytics (`src/lib/analytics`)
+- **Mixpanel** product analytics via the official `mixpanel-react-native` SDK in native mode. Every event goes through the typed `track()` in `index.ts`; the catalog in `events.ts` IS the tracking plan in code — add/change events there, never call the SDK directly from a screen. Init + app-lifecycle (`App Opened`/`App Backgrounded` + flush) live in `src/app/_layout.tsx`.
+- Key: `EXPO_PUBLIC_MIXPANEL_TOKEN` (write-only project token — safe to ship). Empty ⇒ analytics is a graceful no-op (same pattern as `revenuecatClient`). Optional `EXPO_PUBLIC_MIXPANEL_HOST` for EU/India residency (empty = US).
+- **Native module** → needs an EAS dev/prod build; it will NOT run in Expo Go, and adding it requires a brand-new build (an OTA reload won't load native code). No Expo config plugin needed (autolinked in prebuild).
+- **Identity:** the app has no login. We keep Mixpanel's anonymous device id (never call `identify`/`alias`) and hand it to RevenueCat via the reserved `$mixpanelDistinctId` attribute (`revenuecatClient.setMixpanelDistinctId`), so server-side revenue unifies onto the same person without touching RC's live anonymous IDs.
+- **Revenue is owned server-side:** enable the RevenueCat → Mixpanel integration in the RC dashboard (captures renewals/refunds/trials even when the app is closed). The client fires `Purchase Completed` WITHOUT `trackCharge` to avoid double-counting. No ATT prompt is required (first-party analytics, no IDFA) — but declare an App Privacy "Product Interaction" entry in App Store Connect.
+- Dev builds DO send (tagged `environment: development` super property so you can verify funnels on a dev client); filter that out for prod reports. Full research + event spec: `docs/ANALYTICS_MIXPANEL_REFERENCE.md`.
+
 ## Environment variables
-Local dev: put them in `.env` (gitignored — see `.env.example`). Builds: set them as EAS environment variables. Required: the two AI keys (Gemini + FLUX fallback) + three RevenueCat keys above. (The unused Vibecode-injected keys — Anthropic / Grok / Google / ElevenLabs — have been removed.)
+Local dev: put them in `.env` (gitignored — see `.env.example`). Builds: set them as EAS environment variables. Required: the two AI keys (Gemini + FLUX fallback) + three RevenueCat keys above. Optional: `EXPO_PUBLIC_MIXPANEL_TOKEN` (+ `EXPO_PUBLIC_MIXPANEL_HOST` for EU/India) — analytics no-ops without it. (The unused Vibecode-injected keys — Anthropic / Grok / Google / ElevenLabs — have been removed.)
 
 ## Build & release (EAS — managed workflow, no `ios/` or `android/` folders)
 - Install deps: `bun install`

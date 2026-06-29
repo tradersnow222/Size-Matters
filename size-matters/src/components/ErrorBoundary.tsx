@@ -3,6 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AlertTriangle, RefreshCw } from 'lucide-react-native';
 import { colors, spacing } from '@/lib/design';
+import { track } from '@/lib/analytics';
 
 interface Props {
   children: ReactNode;
@@ -29,9 +30,10 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    // You could log the error to an error reporting service here
-    // For now, we just log to console
     console.error('ErrorBoundary caught an error:', error, errorInfo);
+    // The ultimate drop-off: a render crash sent the user to the recovery screen.
+    // No-ops if analytics isn't initialized yet (e.g. a crash during first launch).
+    track('Error Shown', { error_type: 'render_crash', screen: 'app' });
   }
 
   handleReset = (): void => {

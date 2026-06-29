@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
   View,
   Text,
@@ -40,6 +41,7 @@ import { WatermarkOverlay, ThumbnailWatermark } from '@/components/WatermarkOver
 import { PaywallModal } from '@/components/PaywallModal';
 import { colors, spacing, touchTargets, gradients } from '@/lib/design';
 import { GlowingButton } from '@/components/GlowingButton';
+import { track, incrementProfile } from '@/lib/analytics';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CARD_WIDTH = (SCREEN_WIDTH - (spacing.screenPadding * 2) - spacing.sm) / 2;
@@ -441,6 +443,7 @@ function ImageViewer({
       {/* Paywall Modal - rendered inside ImageViewer so it appears on top */}
       <PaywallModal
         visible={showPaywall}
+        placement="watermark_removal_gallery"
         onClose={onClosePaywall}
         onSuccess={onPaywallSuccess}
         photoId={pendingSharePhotoId}
@@ -473,6 +476,13 @@ export default function GalleryScreen() {
     useAppStore.getState().loadFromStorage();
   }, []);
 
+  // "Gallery Viewed" each time the tab gains focus — a re-engagement signal.
+  useFocusEffect(
+    useCallback(() => {
+      track('Gallery Viewed', { saved_count: useAppStore.getState().photos.length });
+    }, []),
+  );
+
   // Keep selectedPhoto in sync with the store (e.g., when isUnlocked changes)
   useEffect(() => {
     if (selectedPhoto) {
@@ -485,6 +495,7 @@ export default function GalleryScreen() {
 
   const handlePhotoPress = (photo: FishPhoto) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    track('Gallery Item Opened', {});
     setSelectedPhoto(photo);
     setShowViewer(true);
   };
@@ -544,6 +555,12 @@ export default function GalleryScreen() {
 
         updatePhoto(photo.id, { shareCount: photo.shareCount + 1 });
         incrementShares();
+        track('Photo Shared', {
+          has_watermark: !(isPremium || photo.isUnlocked),
+          source: 'gallery',
+          factor: photo.fishScale,
+        });
+        incrementProfile('lifetime_shares', 1);
 
         // Share the image
         if (await Sharing.isAvailableAsync()) {
@@ -585,6 +602,7 @@ export default function GalleryScreen() {
   const confirmDelete = () => {
     if (pendingDelete) {
       deletePhoto(pendingDelete.id);
+      track('Gallery Item Deleted', {});
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
     setPendingDelete(null);
@@ -592,6 +610,7 @@ export default function GalleryScreen() {
 
   const handleSetAsProfilePhoto = async (photo: FishPhoto) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    track('Gallery Item Set As Profile', {});
     const imageUri = photo.editedUri || photo.originalUri;
     // Copy out of cache so the avatar survives app updates / cache purges.
     const persisted = await persistImage(imageUri, 'profile');
@@ -616,6 +635,7 @@ export default function GalleryScreen() {
         // never reads the library. Requires NSPhotoLibraryAddUsageDescription
         // (added via the expo-media-library plugin in app.json).
         const { status } = await MediaLibrary.requestPermissionsAsync(true);
+        track('Photo Permission Result', { granted: status === 'granted', status });
         if (status !== 'granted') {
           console.log('Permission denied');
           return;
@@ -626,6 +646,12 @@ export default function GalleryScreen() {
 
         // Save to camera roll
         await MediaLibrary.saveToLibraryAsync(watermarkedUri);
+        track('Photo Saved', {
+          factor: photo.fishScale,
+          has_watermark: !(isPremium || photo.isUnlocked),
+          destination: 'camera_roll',
+          source: 'gallery',
+        });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } catch (error) {
         console.log('Save error:', error);
@@ -970,6 +996,7 @@ export default function GalleryScreen() {
       {!showViewer && (
         <PaywallModal
           visible={showPaywall}
+          placement="watermark_removal_gallery"
           onClose={() => {
             setShowPaywall(false);
             setPendingSharePhoto(null);

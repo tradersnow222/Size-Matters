@@ -29,6 +29,7 @@ import {
   restorePurchases,
 } from '@/lib/revenuecatClient';
 import { useAppStore } from '@/lib/store';
+import { track, syncSubscriptionState } from '@/lib/analytics';
 import { colors } from '@/lib/design';
 import { PRIVACY_URL, TERMS_URL, SUPPORT_EMAIL } from '@/lib/appConfig';
 import type { PurchasesPackage } from 'react-native-purchases';
@@ -59,9 +60,10 @@ interface PaywallModalProps {
   onClose: () => void;
   onSuccess: () => void;
   photoId?: string; // If provided, we're unlocking a specific photo
+  placement?: string; // Where the paywall was triggered — segments the revenue funnel
 }
 
-export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallModalProps) {
+export function PaywallModal({ visible, onClose, onSuccess, photoId, placement = 'watermark_removal' }: PaywallModalProps) {
   const [showSuccess, setShowSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState(getRandomSuccessMessage());
   const [selectedPlan, setSelectedPlan] = useState<'single' | 'annual'>('annual');
@@ -77,6 +79,16 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
       setErrorMessage(null);
     }
   }, [visible]);
+
+  // "Paywall Viewed" — funnel step 1. Fires each time the modal opens.
+  useEffect(() => {
+    if (visible) {
+      track('Paywall Viewed', {
+        placement,
+        free_resizes_remaining: useAppStore.getState().freeEditsRemaining,
+      });
+    }
+  }, [visible, placement]);
 
   // Fetch offerings from RevenueCat
   const {
@@ -117,7 +129,13 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
     mutationFn: async (pkg: PurchasesPackage) => {
       const result = await purchasePackage(pkg);
       if (!result.ok) {
-        throw new Error(result.reason);
+        // Preserve the SDK's userCancelled flag for analytics WITHOUT changing the
+        // message (friendlyPurchaseError reads error.message === reason).
+        const err = new Error(result.reason) as Error & { userCancelled?: boolean };
+        err.userCancelled = Boolean(
+          (result.error as { userCancelled?: boolean } | undefined)?.userCancelled,
+        );
+        throw err;
       }
       return { customerInfo: result.data, packageId: pkg.identifier };
     },
@@ -147,6 +165,20 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
         return;
       }
 
+      // Funnel step 4 — in-session signal only (no client trackCharge; RevenueCat's
+      // server-side integration owns the revenue dollars to avoid double-counting).
+      track('Purchase Completed', {
+        plan_id: packageId,
+        placement,
+        is_trial: false,
+        price: selectedPackage?.product.price,
+        currency: selectedPackage?.product.currencyCode,
+      });
+      if (packageId !== '$rc_custom_single_unlock') {
+        syncSubscriptionState();
+        track('Entitlement Changed', { entitlement: 'premium', source: 'purchase' });
+      }
+
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccessMessage(getRandomSuccessMessage());
       setShowSuccess(true);
@@ -161,6 +193,12 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
       console.log('Purchase error:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       const reason = error instanceof Error ? error.message : undefined;
+      track('Purchase Failed', {
+        reason: reason ?? 'unknown',
+        user_cancelled: Boolean((error as { userCancelled?: boolean })?.userCancelled),
+        placement,
+        plan_id: selectedPackage?.identifier,
+      });
       setErrorMessage(friendlyPurchaseError(reason));
     },
   });
@@ -176,8 +214,11 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
     },
     onSuccess: async (customerInfo) => {
       const granted = Boolean(customerInfo?.entitlements?.active?.['premium']);
+      track('Purchase Restored', { found_subscription: granted, placement });
       if (granted) {
         setPremium(true);
+        syncSubscriptionState();
+        track('Entitlement Changed', { entitlement: 'premium', source: 'restore' });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         onSuccess();
         onClose();
@@ -198,13 +239,33 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setErrorMessage(null);
     setSelectedPlan(plan);
+    const pkg = plan === 'single' ? singleUnlockPackage : annualPackage;
+    track('Plan Selected', {
+      plan_id: plan === 'single' ? '$rc_custom_single_unlock' : '$rc_annual',
+      placement,
+      price: pkg?.product.price,
+      currency: pkg?.product.currencyCode,
+    });
   };
 
   const handleContinue = () => {
     if (!selectedPackage || isPurchasing) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setErrorMessage(null);
+    track('Purchase Started', {
+      plan_id: selectedPackage.identifier,
+      placement,
+      price: selectedPackage.product.price,
+      currency: selectedPackage.product.currencyCode,
+    });
     purchaseMutation.mutate(selectedPackage);
+  };
+
+  // Wrap the parent's onClose so a manual dismiss (X / back) is a measurable funnel exit,
+  // while the post-purchase auto-close (which calls onClose directly) is not.
+  const handleDismiss = () => {
+    if (!showSuccess) track('Paywall Dismissed', { placement });
+    onClose();
   };
 
   const openLink = (url: string) => {
@@ -218,7 +279,7 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
       visible={visible}
       transparent={false}
       animationType="slide"
-      onRequestClose={onClose}
+      onRequestClose={handleDismiss}
     >
       <Animated.View
         entering={FadeIn.duration(200)}
@@ -233,7 +294,7 @@ export function PaywallModal({ visible, onClose, onSuccess, photoId }: PaywallMo
             {/* Close button - fixed at top */}
             <View className="absolute top-14 right-5 z-10">
               <Pressable
-                onPress={onClose}
+                onPress={handleDismiss}
                 className="w-10 h-10 rounded-full bg-white/10 items-center justify-center"
               >
                 <X size={20} color="white" />

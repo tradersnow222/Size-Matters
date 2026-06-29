@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, Pressable, Image, Modal } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
@@ -38,6 +40,7 @@ import { useAppStore } from '@/lib/store';
 import { persistImage } from '@/lib/fileStore';
 import { colors, spacing, touchTargets, gradients } from '@/lib/design';
 import { sendFeedbackEmail, requestAppReview, PRIVACY_URL, TERMS_URL } from '@/lib/appConfig';
+import { track } from '@/lib/analytics';
 
 const ACHIEVEMENTS = [
   {
@@ -139,6 +142,7 @@ export default function ProfileScreen() {
 
   const handleResetApp = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    track('App Data Reset', {});
     await resetAllData();
     setShowResetConfirm(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -155,6 +159,35 @@ export default function ProfileScreen() {
   };
 
   const unlockedCount = ACHIEVEMENTS.filter(isAchievementUnlocked).length;
+
+  // "Profile Viewed" each time the tab gains focus.
+  useFocusEffect(
+    useCallback(() => {
+      track('Profile Viewed', { lifetime_resizes: totalEdits, lifetime_shares: totalShares });
+    }, [totalEdits, totalShares]),
+  );
+
+  // Fire "Achievement Unlocked" once per achievement (persisted), the first time the user
+  // has crossed its threshold and lands on this screen — a clean de-duped milestone signal.
+  useEffect(() => {
+    (async () => {
+      const KEY = 'sm_announced_achievements_v1';
+      try {
+        const raw = await AsyncStorage.getItem(KEY);
+        const announced: string[] = raw ? JSON.parse(raw) : [];
+        const fresh = ACHIEVEMENTS.filter(isAchievementUnlocked)
+          .map((a) => a.id)
+          .filter((id) => !announced.includes(id));
+        if (fresh.length) {
+          fresh.forEach((id) => track('Achievement Unlocked', { achievement_id: id }));
+          await AsyncStorage.setItem(KEY, JSON.stringify([...announced, ...fresh]));
+        }
+      } catch {
+        // best-effort; never block the UI on analytics
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalEdits, totalShares]);
 
   // Average enlargement across catches that were actually enlarged. Mixing in
   // shrinks/originals would make this number meaningless; null = nothing yet.

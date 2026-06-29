@@ -719,3 +719,18 @@ export async function resizeFish(imageUri: string, scale: number, species?: stri
   }
   return resizeFishWithGemini(imageUri, scale, species);
 }
+
+/**
+ * Engine identifiers for analytics (provider + model), accounting for the proxy. Lets
+ * resize/detection events report which engine ran so you can compare success rate and
+ * latency across providers without leaking keys or coupling the UI to internals.
+ */
+export function getEngineInfo() {
+  const proxied = !!PROXY_URL;
+  return {
+    resizeProvider: proxied ? 'proxy' : RESIZE_PROVIDER,
+    resizeModel: proxied ? 'server' : RESIZE_PROVIDER === 'gemini' ? GEMINI_IMAGE_MODEL : 'flux-kontext-pro',
+    detectProvider: proxied ? 'proxy' : 'gemini',
+    detectModel: proxied ? 'server' : GEMINI_TEXT_MODEL,
+  } as const;
+}
