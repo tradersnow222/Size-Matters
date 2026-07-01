@@ -47,6 +47,27 @@ interface FluxPollResponse {
  */
 const RESIZE_PROVIDER: 'gemini' | 'flux' = 'gemini';
 
+/**
+ * ANATOMY GUARDRAIL (the "extra hand" defense)
+ * --------------------------------------------
+ * Nano Banana is stochastic and, like every image model, is weakest at hands. When it
+ * re-draws the grip around an enlarged fish it can hallucinate a third / duplicated /
+ * floating hand. The prompt now forbids that (see generateResizePrompt), but a prompt can
+ * only lower the rate — it can't guarantee zero. So every resize is also VERIFIED: a cheap
+ * vision pass compares the result to the original and flags an extra/phantom hand or a
+ * deformed limb; a rejected result is regenerated (best-of-N) so the user only ever sees a
+ * clean image. Set VERIFY_RESIZE=false to disable the second layer (faster/cheaper, but the
+ * occasional artifact can slip through).
+ */
+const VERIFY_RESIZE = true;
+/** Total resize tries when verification rejects a result (1 = no retry). Each extra try is one more paid image call. */
+const MAX_RESIZE_ATTEMPTS = 3;
+/** Stop starting a fresh retry once this much wall-clock has elapsed, so a bad run can't stack up to 3×60s. */
+const RESIZE_RETRY_DEADLINE_MS = 45000;
+/** Appended to the prompt on a retry, after verification caught an artifact, to steer the model off the failure. */
+const RETRY_REINFORCE =
+  'CRITICAL: a previous attempt incorrectly added an extra hand. The person has a fixed number of hands — do NOT add any third, duplicate, floating or disembodied hand, arm or finger. Reproduce exactly the hands shown in the original photo and nothing more.';
+
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY; // detection + resize (primary)
 const FLUX_API_KEY = process.env.EXPO_PUBLIC_FLUX_API_KEY; // resize (fallback)
 
@@ -339,20 +360,28 @@ function generateResizePrompt(scale: number, species?: string): string {
   const identityLock =
     `Keep it the exact same ${fishName}: the same species with the same colors, markings, spots, scales, fins, tail and head, and the same body proportions. Only its overall size changes — do not swap it for a different kind of fish.`;
 
-  // 3. GRIP — the key fix. Allow ONLY the hands/arms to adapt to the new fish size.
+  // 3. GRIP — keep the EXISTING hands; never invent new ones. Re-posing the arms or
+  //    "bringing in a second hand" is exactly what makes the model hallucinate a third
+  //    hand, so we forbid it: the fish simply grows past the current grip (a real trophy
+  //    fish sticks out well beyond the hand holding it) and only the fingers already
+  //    touching the fish may adjust to its new size.
   const gripNote = isShrinking
-    ? `Naturally adjust the person's hands and fingers to hold the now-smaller ${fishName} convincingly — for example pinching it by the lip or cupping it in one hand — with no empty gap or oversized grip where the bigger fish used to be.`
-    : `Naturally re-pose the person's hands and arms to realistically hold the now much larger, heavier ${fishName}, bringing in a second hand to support its weight if needed, so the grip looks natural and the fish does not appear to float.`;
+    ? `Keep the person's existing hands exactly where they are, with the same number of hands, arms and fingers as in the original photo. Only the fingers already touching the ${fishName} may close in slightly so the now-smaller ${fishName} still sits naturally in the same grip, leaving no empty gap where the bigger fish used to be. Do not add, remove, duplicate or relocate any hand or arm.`
+    : `Keep the person's existing hands and arms exactly as they are in the original photo — the same number of hands, in the same places. Do NOT add a second or third hand and do NOT introduce any new arm: simply let the enlarged ${fishName} extend beyond the current grip, the way a real big fish sticks out well past the hand holding it. Only the fingers already in contact with the ${fishName} may adjust to wrap around its larger body.`;
 
-  // 4. SCENE — everything that is NOT the fish or the grip stays as photographed.
+  // 4. ANATOMY GUARDRAIL — the hard rule that prevents the "extra hand" artifact.
+  const anatomyLock =
+    `The person must stay anatomically identical to the original: exactly the same arms, hands and fingers, in the same number and the same positions. Never generate an extra, third, duplicated, floating or disembodied hand, arm or finger anywhere in the image.`;
+
+  // 5. SCENE — everything that is NOT the fish stays as photographed.
   const sceneLock =
-    `Keep the person's face, expression, hair, hat and clothing the same, and keep the background, water, sky and lighting exactly the same. The only things that change are the fish's size and the hands and arms holding it.`;
+    `Keep the person's face, expression, hair, hat and clothing the same, and keep the background, water, sky and lighting exactly the same. The only thing that changes is the fish's size — and, at most, how the fingers already holding it wrap around it.`;
 
-  // 5. REALISM
+  // 6. REALISM
   const realism =
     `Match the lighting, shadows, color and grain so the result looks like a completely real, un-edited photograph.`;
 
-  return `${sizeInstruction} ${identityLock} ${gripNote} ${sceneLock} ${realism}`;
+  return `${sizeInstruction} ${identityLock} ${gripNote} ${anatomyLock} ${sceneLock} ${realism}`;
 }
 
 /** Gemini image generation supports a fixed set of aspect ratios. */
@@ -396,9 +425,188 @@ async function getImageAspectRatioLabel(uri: string): Promise<string> {
   }
 }
 
+/** One Nano Banana resize call. Returns the inline image (base64 + mime) or a typed error. */
+async function geminiResizeOnce(
+  base64: string,
+  prompt: string,
+  aspectRatio: string,
+): Promise<{ ok: true; imgData: string; mime: string } | { ok: false; result: FishEditResult }> {
+  const response = await fetchWithRetry(`${GEMINI_API_BASE}/models/${GEMINI_IMAGE_MODEL}:generateContent`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY as string,
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: 'image/jpeg', data: base64 } },
+          ],
+        },
+      ],
+      generationConfig: {
+        responseModalities: ['IMAGE'],
+        imageConfig: { aspectRatio },
+      },
+      // Fishing photos contain people; keep the model from false-flagging them.
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ],
+    }),
+  }, RESIZE_TIMEOUT_MS);
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.log('[FishEditor] Gemini API error:', response.status, errorText);
+
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
+      // Bad/restricted/missing key, or a malformed request — all setup problems.
+      return {
+        ok: false,
+        result: {
+          success: false,
+          error: `Resize API rejected the request (HTTP ${response.status}). The Gemini API key is invalid, restricted, or not included in this build.`,
+          errorType: 'config_error',
+        },
+      };
+    }
+
+    if (response.status === 429) {
+      return { ok: false, result: { success: false, error: 'Resize is busy right now (rate limited). Try again in a moment.', errorType: 'api_error' } };
+    }
+
+    return { ok: false, result: { success: false, error: `Gemini API error: ${response.status}`, errorType: 'api_error' } };
+  }
+
+  const data = await response.json();
+
+  // Find the inline image part (tolerate camelCase or snake_case from the API).
+  const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
+  const imagePart = parts.find((p) => p?.inlineData?.data || p?.inline_data?.data);
+  const imgData: string | undefined = imagePart?.inlineData?.data ?? imagePart?.inline_data?.data;
+
+  if (!imgData) {
+    // No image — usually a safety block or a text-only refusal.
+    const blockReason =
+      data?.promptFeedback?.blockReason ?? data?.candidates?.[0]?.finishReason ?? null;
+    console.log('[FishEditor] Gemini returned no image. reason:', blockReason);
+    return {
+      ok: false,
+      result: {
+        success: false,
+        error: blockReason ? `Resize was blocked by the model (${blockReason}).` : 'No image returned from the resize API.',
+        errorType: 'api_error',
+      },
+    };
+  }
+
+  const mime: string = imagePart?.inlineData?.mimeType ?? imagePart?.inline_data?.mime_type ?? 'image/png';
+  return { ok: true, imgData, mime };
+}
+
+interface ResizeVerdict {
+  /** Safe to show the user: no extra/phantom hand, no deformed limb. */
+  clean: boolean;
+  /** Lower = better. Used to pick the least-bad candidate if every attempt is rejected. */
+  score: number;
+  note: string;
+}
+
 /**
- * PRIMARY resize: Google "Nano Banana" (Gemini image model). Single synchronous call —
- * no polling. Returns a local file URI to the edited PNG.
+ * Defense-in-depth against the "extra hand" artifact. Sends the ORIGINAL and the EDITED
+ * image to the cheap vision model and asks it to flag a third/phantom hand or a deformed
+ * limb. FAILS OPEN (treats the result as clean) on any error, missing key, or unparseable
+ * response — a verifier hiccup must never turn a good resize into a user-visible failure;
+ * worst case we're back to the prompt-only behavior, never worse.
+ */
+async function verifyResizeClean(originalBase64: string, editedBase64: string, editedMime: string): Promise<ResizeVerdict> {
+  if (!VERIFY_RESIZE || !isUsableKey(GEMINI_API_KEY)) return { clean: true, score: 0, note: 'verify skipped' };
+  try {
+    const instruction =
+      'You are a strict quality checker for an app that enlarges the fish in a fishing photo. ' +
+      'The FIRST image is the ORIGINAL; the SECOND is the EDITED version. In the edited image the fish may be a ' +
+      'different size, but the PERSON must be anatomically identical to the original. Inspect the hands, arms and ' +
+      'fingers closely — the most common AI failure here is adding a THIRD hand or a duplicated, floating, or ' +
+      'disembodied hand. Report: handCount = how many human hands are visible in the EDITED image; ' +
+      'extraOrPhantomHand = true if the edited image shows a third hand, or any duplicated, floating or disembodied ' +
+      'hand/arm that does not naturally belong to the one person; deformed = true if any hand, finger or limb is ' +
+      'malformed, merged, or has the wrong number of fingers; realistic = true if the edited image still looks like ' +
+      'a real, un-edited photograph. Judge only what you can actually see.';
+
+    const response = await fetchWithTimeout(`${GEMINI_API_BASE}/models/${GEMINI_TEXT_MODEL}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY as string,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: instruction },
+              { inlineData: { mimeType: 'image/jpeg', data: originalBase64 } },
+              { inlineData: { mimeType: editedMime, data: editedBase64 } },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              handCount: { type: 'INTEGER' },
+              extraOrPhantomHand: { type: 'BOOLEAN' },
+              deformed: { type: 'BOOLEAN' },
+              realistic: { type: 'BOOLEAN' },
+              note: { type: 'STRING' },
+            },
+            required: ['handCount', 'extraOrPhantomHand', 'deformed', 'realistic', 'note'],
+          },
+        },
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+        ],
+      }),
+    }, DETECT_TIMEOUT_MS);
+
+    if (!response.ok) return { clean: true, score: 0, note: `verify http ${response.status}` };
+
+    const data = await response.json();
+    const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
+    const text: string = parts.find((p) => typeof p?.text === 'string')?.text || '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) return { clean: true, score: 0, note: 'verify unparsed' };
+
+    const v = JSON.parse(m[0]);
+    const handCount = typeof v.handCount === 'number' ? v.handCount : 2;
+    const extra = v.extraOrPhantomHand === true;
+    const deformed = v.deformed === true;
+    const realistic = v.realistic !== false;
+    // Accept up to two hands (a plausible two-handed grip is fine); reject 3+, phantom, or deformed.
+    const clean = !extra && !deformed && handCount <= 2;
+    const score = (extra ? 4 : 0) + (handCount > 2 ? 3 : 0) + (deformed ? 2 : 0) + (realistic ? 0 : 1);
+    return { clean, score, note: typeof v.note === 'string' ? v.note : '' };
+  } catch {
+    return { clean: true, score: 0, note: 'verify error' };
+  }
+}
+
+/**
+ * PRIMARY resize: Google "Nano Banana" (Gemini image model). Generates the edit, then
+ * VERIFIES it (extra/phantom-hand check) and regenerates a rejected result up to
+ * MAX_RESIZE_ATTEMPTS times, returning the first clean one — or the least-bad candidate if
+ * none pass. Returns a local file URI to the edited image.
  */
 async function resizeFishWithGemini(
   imageUri: string,
@@ -423,83 +631,51 @@ async function resizeFishWithGemini(
       encoding: FileSystem.EncodingType.Base64,
     });
 
-    const prompt = generateResizePrompt(scale, species);
+    const basePrompt = generateResizePrompt(scale, species);
     const aspectRatio = await getImageAspectRatioLabel(imageUri);
 
-    const response = await fetchWithRetry(`${GEMINI_API_BASE}/models/${GEMINI_IMAGE_MODEL}:generateContent`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': GEMINI_API_KEY,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType: 'image/jpeg', data: base64 } },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseModalities: ['IMAGE'],
-          imageConfig: { aspectRatio },
-        },
-        // Fishing photos contain people; keep the model from false-flagging them.
-        safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-        ],
-      }),
-    }, RESIZE_TIMEOUT_MS);
+    const maxAttempts = VERIFY_RESIZE ? MAX_RESIZE_ATTEMPTS : 1;
+    const startedAt = Date.now();
+    let best: { imgData: string; mime: string; score: number } | null = null;
+    let lastError: FishEditResult | null = null;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log('[FishEditor] Gemini API error:', response.status, errorText);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // On a retry, explicitly call out the failure mode we just saw, on top of the base prompt.
+      const prompt = attempt === 0 ? basePrompt : `${basePrompt} ${RETRY_REINFORCE}`;
+      const once = await geminiResizeOnce(base64, prompt, aspectRatio);
 
-      if (response.status === 400 || response.status === 401 || response.status === 403) {
-        // Bad/!restricted/missing key, or a malformed request — all setup problems.
-        return {
-          success: false,
-          error: `Resize API rejected the request (HTTP ${response.status}). The Gemini API key is invalid, restricted, or not included in this build.`,
-          errorType: 'config_error',
-        };
+      if (!once.ok) {
+        lastError = once.result;
+        // A config error won't improve on retry; surface it immediately.
+        if (once.result.errorType === 'config_error') return once.result;
+        // Transient/empty: keep any earlier candidate, otherwise try again.
+        if (best) break;
+        continue;
       }
 
-      if (response.status === 429) {
-        return { success: false, error: 'Resize is busy right now (rate limited). Try again in a moment.', errorType: 'api_error' };
+      const verdict = await verifyResizeClean(base64, once.imgData, once.mime);
+      if (verdict.clean) {
+        if (attempt > 0) console.log(`[FishEditor] resize clean on attempt ${attempt + 1}`);
+        best = { imgData: once.imgData, mime: once.mime, score: verdict.score };
+        break;
       }
 
-      return { success: false, error: `Gemini API error: ${response.status}`, errorType: 'api_error' };
+      console.log(`[FishEditor] resize attempt ${attempt + 1} rejected by verify (score ${verdict.score}): ${verdict.note}`);
+      if (!best || verdict.score < best.score) {
+        best = { imgData: once.imgData, mime: once.mime, score: verdict.score };
+      }
+      // Don't start a fresh full attempt if we're past the wall-clock budget.
+      if (Date.now() - startedAt > RESIZE_RETRY_DEADLINE_MS) break;
     }
 
-    const data = await response.json();
-
-    // Find the inline image part (tolerate camelCase or snake_case from the API).
-    const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
-    const imagePart = parts.find((p) => p?.inlineData?.data || p?.inline_data?.data);
-    const imgData: string | undefined = imagePart?.inlineData?.data ?? imagePart?.inline_data?.data;
-
-    if (!imgData) {
-      // No image — usually a safety block or a text-only refusal.
-      const blockReason =
-        data?.promptFeedback?.blockReason ?? data?.candidates?.[0]?.finishReason ?? null;
-      console.log('[FishEditor] Gemini returned no image. reason:', blockReason);
-      return {
-        success: false,
-        error: blockReason ? `Resize was blocked by the model (${blockReason}).` : 'No image returned from the resize API.',
-        errorType: 'api_error',
-      };
+    if (!best) {
+      return lastError ?? { success: false, error: 'No image returned from the resize API.', errorType: 'api_error' };
     }
 
-    const mime: string = imagePart?.inlineData?.mimeType ?? imagePart?.inline_data?.mime_type ?? 'image/png';
-    const ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'png';
+    const ext = best.mime.includes('jpeg') || best.mime.includes('jpg') ? 'jpg' : 'png';
     const outputUri = `${FileSystem.cacheDirectory}fish_resized_${Date.now()}.${ext}`;
 
-    await FileSystem.writeAsStringAsync(outputUri, imgData, {
+    await FileSystem.writeAsStringAsync(outputUri, best.imgData, {
       encoding: FileSystem.EncodingType.Base64,
     });
 

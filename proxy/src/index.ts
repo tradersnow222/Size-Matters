@@ -15,6 +15,7 @@ export interface Env {
   GEMINI_API_KEY: string;
   RESIZE_MODEL?: string;
   DETECT_MODEL?: string;
+  MAX_RESIZE_ATTEMPTS?: string;
   DAILY_FREE_LIMIT?: string;
   APP_SHARED_SECRET?: string;
   RATE_LIMIT?: KVNamespace;
@@ -23,6 +24,17 @@ export interface Env {
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_RESIZE_MODEL = 'gemini-3.1-flash-image';
 const DEFAULT_DETECT_MODEL = 'gemini-2.5-flash';
+
+/**
+ * Anatomy guardrail (kept in sync with the client `fishEditor.ts`): every resize is verified
+ * for an extra/phantom hand and regenerated (best-of-N) if it fails, so the server never
+ * returns a 3-handed image. Set VERIFY_RESIZE=false to disable. Override the cap with the
+ * MAX_RESIZE_ATTEMPTS env var if you want fewer paid retries.
+ */
+const VERIFY_RESIZE = true;
+const DEFAULT_MAX_RESIZE_ATTEMPTS = 3;
+const RETRY_REINFORCE =
+  'CRITICAL: a previous attempt incorrectly added an extra hand. The person has a fixed number of hands — do NOT add any third, duplicate, floating or disembodied hand, arm or finger. Reproduce exactly the hands shown in the original photo and nothing more.';
 
 const SAFETY = [
   'HARM_CATEGORY_HARASSMENT',
@@ -71,13 +83,17 @@ function generateResizePrompt(scale: number, species?: string): string {
   }
 
   const identityLock = `Keep it the exact same ${fishName}: the same species with the same colors, markings, spots, scales, fins, tail and head, and the same body proportions. Only its overall size changes — do not swap it for a different kind of fish.`;
+  // GRIP: keep the EXISTING hands; "re-posing arms" / "bring in a second hand" is what makes
+  // the model hallucinate a third hand. The fish simply grows past the current grip instead.
   const gripNote = isShrinking
-    ? `Naturally adjust the person's hands and fingers to hold the now-smaller ${fishName} convincingly — for example pinching it by the lip or cupping it in one hand — with no empty gap or oversized grip where the bigger fish used to be.`
-    : `Naturally re-pose the person's hands and arms to realistically hold the now much larger, heavier ${fishName}, bringing in a second hand to support its weight if needed, so the grip looks natural and the fish does not appear to float.`;
-  const sceneLock = `Keep the person's face, expression, hair, hat and clothing the same, and keep the background, water, sky and lighting exactly the same. The only things that change are the fish's size and the hands and arms holding it.`;
+    ? `Keep the person's existing hands exactly where they are, with the same number of hands, arms and fingers as in the original photo. Only the fingers already touching the ${fishName} may close in slightly so the now-smaller ${fishName} still sits naturally in the same grip, leaving no empty gap where the bigger fish used to be. Do not add, remove, duplicate or relocate any hand or arm.`
+    : `Keep the person's existing hands and arms exactly as they are in the original photo — the same number of hands, in the same places. Do NOT add a second or third hand and do NOT introduce any new arm: simply let the enlarged ${fishName} extend beyond the current grip, the way a real big fish sticks out well past the hand holding it. Only the fingers already in contact with the ${fishName} may adjust to wrap around its larger body.`;
+  // ANATOMY GUARDRAIL — the hard rule that prevents the "extra hand" artifact.
+  const anatomyLock = `The person must stay anatomically identical to the original: exactly the same arms, hands and fingers, in the same number and the same positions. Never generate an extra, third, duplicated, floating or disembodied hand, arm or finger anywhere in the image.`;
+  const sceneLock = `Keep the person's face, expression, hair, hat and clothing the same, and keep the background, water, sky and lighting exactly the same. The only thing that changes is the fish's size — and, at most, how the fingers already holding it wrap around it.`;
   const realism = `Match the lighting, shadows, color and grain so the result looks like a completely real, un-edited photograph.`;
 
-  return `${sizeInstruction} ${identityLock} ${gripNote} ${sceneLock} ${realism}`;
+  return `${sizeInstruction} ${identityLock} ${gripNote} ${anatomyLock} ${sceneLock} ${realism}`;
 }
 
 /** Per-IP daily cap. No-op unless a RATE_LIMIT KV namespace is bound. */
@@ -148,6 +164,101 @@ async function handleDetect(req: Request, env: Env): Promise<Response> {
   }
 }
 
+/** One Nano Banana resize call. Returns the inline image or an HTTP error status. */
+async function geminiResizeOnce(
+  env: Env, imageBase64: string, prompt: string, aspectRatio?: string,
+): Promise<{ ok: true; imgData: string; mime: string } | { ok: false; status: number; detail: string }> {
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }] }],
+    generationConfig: {
+      responseModalities: ['IMAGE'],
+      ...(aspectRatio ? { imageConfig: { aspectRatio } } : {}),
+    },
+    safetySettings: SAFETY,
+  };
+  const model = env.RESIZE_MODEL || DEFAULT_RESIZE_MODEL;
+  const r = await fetch(`${GEMINI_BASE}/models/${model}:generateContent`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) return { ok: false, status: r.status, detail: (await r.text()).slice(0, 300) };
+
+  const data: any = await r.json();
+  const parts = data.candidates?.[0]?.content?.parts || [];
+  const part = parts.find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
+  const imgData = part?.inlineData?.data ?? part?.inline_data?.data;
+  if (!imgData) {
+    const reason = data?.candidates?.[0]?.finishReason ?? data?.promptFeedback?.blockReason ?? 'no_image';
+    return { ok: false, status: 502, detail: String(reason) };
+  }
+  return { ok: true, imgData, mime: part?.inlineData?.mimeType ?? 'image/png' };
+}
+
+/**
+ * Extra/phantom-hand check. Compares ORIGINAL vs EDITED with the cheap vision model.
+ * Fails OPEN (clean) on any error so a verifier hiccup never blocks a good resize.
+ */
+async function verifyResizeClean(
+  env: Env, originalBase64: string, editedBase64: string, editedMime: string,
+): Promise<{ clean: boolean; score: number; note: string }> {
+  try {
+    const instruction =
+      'You are a strict quality checker for an app that enlarges the fish in a fishing photo. The FIRST image is ' +
+      'the ORIGINAL; the SECOND is the EDITED version. In the edited image the fish may be a different size, but the ' +
+      'PERSON must be anatomically identical. Inspect the hands, arms and fingers closely — the most common AI ' +
+      'failure is adding a THIRD hand or a duplicated/floating/disembodied hand. Report: handCount = human hands ' +
+      'visible in the EDITED image; extraOrPhantomHand = true if there is a third hand or any duplicated, floating or ' +
+      'disembodied hand/arm that does not belong to the one person; deformed = true if any hand/finger/limb is ' +
+      'malformed, merged, or has the wrong number of fingers; realistic = true if it still looks like a real photo. ' +
+      'Judge only what you can see.';
+    const body = {
+      contents: [{ role: 'user', parts: [
+        { text: instruction },
+        { inlineData: { mimeType: 'image/jpeg', data: originalBase64 } },
+        { inlineData: { mimeType: editedMime, data: editedBase64 } },
+      ] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            handCount: { type: 'INTEGER' },
+            extraOrPhantomHand: { type: 'BOOLEAN' },
+            deformed: { type: 'BOOLEAN' },
+            realistic: { type: 'BOOLEAN' },
+            note: { type: 'STRING' },
+          },
+          required: ['handCount', 'extraOrPhantomHand', 'deformed', 'realistic', 'note'],
+        },
+      },
+      safetySettings: SAFETY,
+    };
+    const model = env.DETECT_MODEL || DEFAULT_DETECT_MODEL;
+    const r = await fetch(`${GEMINI_BASE}/models/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) return { clean: true, score: 0, note: `verify http ${r.status}` };
+    const data: any = await r.json();
+    const text: string = (data.candidates?.[0]?.content?.parts || []).find((p: any) => typeof p?.text === 'string')?.text || '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) return { clean: true, score: 0, note: 'verify unparsed' };
+    const v = JSON.parse(m[0]);
+    const handCount = typeof v.handCount === 'number' ? v.handCount : 2;
+    const extra = v.extraOrPhantomHand === true;
+    const deformed = v.deformed === true;
+    const realistic = v.realistic !== false;
+    const clean = !extra && !deformed && handCount <= 2;
+    const score = (extra ? 4 : 0) + (handCount > 2 ? 3 : 0) + (deformed ? 2 : 0) + (realistic ? 0 : 1);
+    return { clean, score, note: typeof v.note === 'string' ? v.note : '' };
+  } catch (e) {
+    return { clean: true, score: 0, note: 'verify error' };
+  }
+}
+
 async function handleResize(req: Request, env: Env): Promise<Response> {
   const { imageBase64, scale, species, aspectRatio } = (await req.json()) as {
     imageBase64?: string; scale?: number; species?: string; aspectRatio?: string;
@@ -155,36 +266,36 @@ async function handleResize(req: Request, env: Env): Promise<Response> {
   if (!imageBase64 || typeof scale !== 'number') return json({ error: 'missing imageBase64 or scale' }, 400);
   if (scale === 1) return json({ imageBase64, mimeType: 'image/jpeg' });
 
-  const body = {
-    contents: [{ role: 'user', parts: [{ text: generateResizePrompt(scale, species) }, { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }] }],
-    generationConfig: {
-      responseModalities: ['IMAGE'],
-      ...(aspectRatio ? { imageConfig: { aspectRatio } } : {}),
-    },
-    safetySettings: SAFETY,
-  };
+  const basePrompt = generateResizePrompt(scale, species);
+  const maxAttempts = VERIFY_RESIZE
+    ? Math.max(1, parseInt(env.MAX_RESIZE_ATTEMPTS || String(DEFAULT_MAX_RESIZE_ATTEMPTS), 10) || DEFAULT_MAX_RESIZE_ATTEMPTS)
+    : 1;
 
-  const model = env.RESIZE_MODEL || DEFAULT_RESIZE_MODEL;
-  const r = await fetch(`${GEMINI_BASE}/models/${model}:generateContent`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-    body: JSON.stringify(body),
-  });
+  let best: { imgData: string; mime: string; score: number } | null = null;
+  let lastErr: { status: number; detail: string } | null = null;
 
-  if (!r.ok) {
-    const detail = (await r.text()).slice(0, 300);
-    return json({ error: 'resize_failed', status: r.status, detail }, r.status === 429 ? 429 : 502);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const prompt = attempt === 0 ? basePrompt : `${basePrompt} ${RETRY_REINFORCE}`;
+    const once = await geminiResizeOnce(env, imageBase64, prompt, aspectRatio);
+    if (!once.ok) {
+      lastErr = { status: once.status, detail: once.detail };
+      if (best) break;
+      // Auth/quota errors won't improve on retry; surface immediately.
+      if (once.status === 400 || once.status === 401 || once.status === 403) break;
+      continue;
+    }
+    if (!VERIFY_RESIZE) { best = { imgData: once.imgData, mime: once.mime, score: 0 }; break; }
+
+    const verdict = await verifyResizeClean(env, imageBase64, once.imgData, once.mime);
+    if (verdict.clean) { best = { imgData: once.imgData, mime: once.mime, score: verdict.score }; break; }
+    if (!best || verdict.score < best.score) best = { imgData: once.imgData, mime: once.mime, score: verdict.score };
   }
 
-  const data: any = await r.json();
-  const parts = data.candidates?.[0]?.content?.parts || [];
-  const part = parts.find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
-  const imgData = part?.inlineData?.data ?? part?.inline_data?.data;
-  if (!imgData) {
-    const reason = data?.candidates?.[0]?.finishReason ?? data?.promptFeedback?.blockReason ?? null;
-    return json({ error: 'no_image', reason }, 502);
+  if (!best) {
+    const status = lastErr?.status ?? 502;
+    return json({ error: 'resize_failed', status, detail: lastErr?.detail ?? 'no image' }, status === 429 ? 429 : 502);
   }
-  return json({ imageBase64: imgData, mimeType: part?.inlineData?.mimeType ?? 'image/png' });
+  return json({ imageBase64: best.imgData, mimeType: best.mime });
 }
 
 export default {
